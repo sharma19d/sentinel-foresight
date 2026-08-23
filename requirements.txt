@@ -1,0 +1,18 @@
+# ── core / ported feature pipeline ──
+numpy
+pydantic>=2
+
+# ── data + PCAP ingest ──
+pandas
+scapy
+
+# ── world model + training (Colab-friendly) ──
+torch
+scikit-learn        # logistic-regression baseline + metrics
+
+# ── explainability ──
+shap
+
+# ── demo interface (offline) ──
+streamlit
+matplotlib
