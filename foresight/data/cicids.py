@@ -59,19 +59,26 @@ def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
     """
     raw = pd.read_csv(path, nrows=nrows, low_memory=False)
     col = _resolve(list(raw.columns))
-    if "label" not in col or "ts" not in col:
-        raise ValueError(f"{path}: not a recognised CIC-IDS CSV (missing Label/Timestamp)")
+    if "label" not in col:
+        raise ValueError(f"{path}: not a recognised CIC-IDS CSV (no Label column)")
 
     def num(canon: str, default=0.0) -> pd.Series:
         if canon in col:
             return pd.to_numeric(raw[col[canon]], errors="coerce").fillna(default)
         return pd.Series(default, index=raw.index, dtype=float)
 
-    ts = pd.to_datetime(raw[col["ts"]], errors="coerce")
+    if "ts" in col:
+        ts_epoch = pd.to_datetime(raw[col["ts"]], errors="coerce").view("int64") / 1e9
+    else:
+        # No Timestamp column — use row order as pseudo-time (CICFlowMeter output
+        # is roughly time-ordered; the world model learns transition order, which
+        # is preserved). One tick per flow; set --window-seconds to flows-per-window.
+        print(f"{path}: no Timestamp column -> using row order as pseudo-time")
+        ts_epoch = pd.Series(range(len(raw)), dtype=float)
     duration_us = num("duration")
 
     out = pd.DataFrame({
-        "ts": ts.view("int64") / 1e9,                     # epoch seconds
+        "ts": ts_epoch,                                    # epoch seconds (or row-order ticks)
         "src_ip": raw[col["src_ip"]].astype(str) if "src_ip" in col else "",
         "dst_ip": raw[col["dst_ip"]].astype(str) if "dst_ip" in col else "",
         "dst_port": num("dst_port").astype(int),
