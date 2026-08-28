@@ -39,43 +39,47 @@ from foresight.model.world_model import (
 )
 
 
-def load_flow_frames(args):
-    """Return a list of per-capture-session flow DataFrames.
+def build_dataset(args):
+    """Load + window each capture file one at a time, discarding the raw
+    flow DataFrame before loading the next.
 
-    Each CIC-IDS-2018 CSV is one day's capture. Days must stay separate:
-    concatenating them into one timeline and then windowing by wall-clock
-    time would force the model to "learn" a transition across the overnight
-    gap between Friday's traffic and Monday's, which is meaningless and
+    A CIC-IDS-2018 day CSV carries ~80 raw CICFlowMeter columns even though
+    only ~14 are used; holding all 10 days' raw DataFrames in memory at
+    once (the previous approach) multiplies peak RAM ~10x over processing
+    one at a time and is what got the run OOM-killed with no traceback on
+    a free-tier Colab instance. Only the small windowed float32 arrays
+    (state vectors, not raw flows) are kept per file.
+
+    Days are windowed independently, not concatenated into one timeline:
+    that would force the model to "learn" a transition across the overnight
+    gap between Friday's traffic and Monday's, which never happened, and
     (with fill_gaps) blows up window count to one per elapsed second across
     the whole multi-day span instead of per second of actual capture.
     """
+    import gc
+
+    per_file_X, per_file_y = [], []
     if args.data:
         from foresight.data.cicids import load_cicids_csv
         files = sorted(glob.glob(args.data))
         if not files:
             raise SystemExit(f"no files match {args.data!r}")
-        print(f"loading {len(files)} CIC-IDS CSV(s)…")
-        frames = []
+        print(f"loading + windowing {len(files)} CIC-IDS CSV(s)…")
         for f in files:
             df = load_cicids_csv(f, nrows=args.nrows)
-            print(f"  {f}: {len(df):,} flows")
-            frames.append(df)
-        return frames
-    print("no --data given → synthetic attack-progression traffic (smoke test)")
-    return [make_synthetic_flows(seed=args.seed, minutes=8.0)]
-
-
-def build_dataset(args):
-    frames = load_flow_frames(args)
-
-    # Window each capture session independently, then concatenate the
-    # resulting sequences — never the raw per-second windows — so no
-    # sequence's lookback window crosses a day boundary.
-    per_file_X, per_file_y = [], []
-    for df in frames:
+            X, y, _ts = flows_to_state_windows(df, window_seconds=args.window_seconds)
+            print(f"  {f}: {len(df):,} flows -> {len(X):,} windows")
+            per_file_X.append(X.values.astype(np.float32))
+            per_file_y.append(y)
+            del df, X
+            gc.collect()
+    else:
+        print("no --data given → synthetic attack-progression traffic (smoke test)")
+        df = make_synthetic_flows(seed=args.seed, minutes=8.0)
         X, y, _ts = flows_to_state_windows(df, window_seconds=args.window_seconds)
         per_file_X.append(X.values.astype(np.float32))
         per_file_y.append(y)
+
     n_windows = sum(len(x) for x in per_file_X)
     print(f"state windows: {n_windows}  features: {per_file_X[0].shape[1]}")
 
