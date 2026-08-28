@@ -197,6 +197,9 @@ def main():
     loss_fn = WorldModelLoss(lambda_stage=args.lambda_stage, class_weights=class_weights.to(device))
     print(f"model: {cfg.encoder}  params: {sum(p.numel() for p in model.parameters()):,}")
 
+    best_f1 = -1.0
+    best_state = None
+    best_epoch = -1
     for ep in range(1, args.epochs + 1):
         model.train(); t0 = time.time(); running = 0.0
         for xb, yn, ys in train_dl:
@@ -206,9 +209,22 @@ def main():
             opt.zero_grad(); loss.backward(); opt.step()
             running += loss.item() * len(xb)
         m = evaluate(model, val_dl, device)
+        # infil_F1 is highly unstable epoch-to-epoch on this imbalanced task
+        # (observed swinging from 0.01 to 0.40 within one run) — training
+        # for a fixed epoch count and keeping only the LAST epoch means the
+        # saved checkpoint is whatever that epoch's noise happened to land
+        # on, not the model's actual best performance. Track and keep the
+        # best-val-F1 epoch's weights instead.
+        is_best = m["infil_f1"] > best_f1
+        if is_best:
+            best_f1 = m["infil_f1"]; best_epoch = ep
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         print(f"ep {ep:2d}  loss {running/len(train_ds):.4f}  "
               f"val: dyn_mse {m['dyn_mse']:.4f}  stage_acc {m['stage_acc']:.3f}  "
-              f"infil_F1 {m['infil_f1']:.3f}  ({time.time()-t0:.1f}s)")
+              f"infil_F1 {m['infil_f1']:.3f}{'  *best*' if is_best else ''}  ({time.time()-t0:.1f}s)")
+
+    model.load_state_dict(best_state)
+    print(f"\nrestored best checkpoint from epoch {best_epoch} (infil_F1 {best_f1:.3f})")
 
     os.makedirs(args.out, exist_ok=True)
     ckpt = os.path.join(args.out, "world_model.pt")
@@ -219,11 +235,12 @@ def main():
         "scaler_mean": scaler.mean_.tolist(),
         "scaler_scale": scaler.scale_.tolist(),
         "window": args.window, "k": args.k, "window_seconds": args.window_seconds,
+        "best_epoch": best_epoch,
     }, ckpt)
     with open(os.path.join(args.out, "train_config.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
-    print(f"\n✓ saved checkpoint → {ckpt}")
-    print(f"✓ final val metrics: {evaluate(model, val_dl, device)}")
+    print(f"✓ saved checkpoint → {ckpt}")
+    print(f"✓ best-epoch val metrics: {evaluate(model, val_dl, device)}")
 
 
 if __name__ == "__main__":
