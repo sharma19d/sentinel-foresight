@@ -35,10 +35,14 @@ from foresight.mitre import AttackStage
 from foresight.model.world_model import WorldModel, WorldModelConfig, INFILTRATION_STAGE
 from foresight.rollout.rollout import forecast_series, rollout, sliding_windows
 
-DEFAULT_CKPT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "checkpoints", "world_model_best.pt",
-)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CKPT = os.path.join(os.path.dirname(_HERE), "checkpoints", "world_model_best.pt")
+
+# A real slice of CIC-IDS-2018 (2018-03-01, Infiltration) bundled with the repo
+# so the demo works on any laptop without the 6.5 GB dataset. Taken from a
+# HELD-OUT validation day — demoing on a training day would show the model
+# recalling traffic it had already fit, which is not the claim being made.
+SAMPLE_CAPTURE = os.path.join(_HERE, "sample_capture.csv.gz")
 
 def stage_name(s: int) -> str:
     return AttackStage(int(s)).name.replace("_", " ").title()
@@ -57,6 +61,12 @@ def load_checkpoint(path: str):
     # different space than the model was trained in, producing confident
     # nonsense — so the training-time statistics travel with the weights.
     return model, mean, scale, ckpt
+
+
+@st.cache_data(show_spinner=False)
+def flows_from_path(path: str, nrows: int) -> pd.DataFrame:
+    from foresight.data.cicids import load_cicids_csv
+    return load_cicids_csv(path, nrows=nrows, require_label=False)
 
 
 @st.cache_data(show_spinner=False)
@@ -102,22 +112,37 @@ def main():
         stride = st.select_slider("Resolution (every Nth window)", [1, 2, 5, 10, 25], value=5)
 
         st.header("Traffic")
-        source = st.radio("Source", ["Built-in synthetic attack", "Upload CIC-IDS CSV"])
-        if source.startswith("Built-in"):
+        source = st.radio("Source", [
+            "Bundled real capture (CIC-IDS-2018)",
+            "Upload CIC-IDS CSV",
+            "Synthetic (out-of-distribution)",
+        ])
+        if source.startswith("Bundled"):
+            st.caption("2018-03-01, a **held-out** day the model never trained on. "
+                       "Infiltration attack; 107k flows.")
+            nrows = st.number_input("Max rows", 10_000, 110_000, 110_000, 10_000)
+        elif source.startswith("Upload"):
+            upload = st.file_uploader("CICFlowMeter CSV", type=["csv", "gz"])
+            nrows = st.number_input("Max rows", 10_000, 1_000_000, 200_000, 10_000)
+        else:
+            st.caption("⚠ Test fixture only — its feature scales sit far outside "
+                       "the training distribution, so the model saturates on it.")
             minutes = st.slider("Capture length (minutes)", 4.0, 30.0, 12.0, 1.0)
             seed = st.number_input("Seed", 0, 9999, 0)
-        else:
-            upload = st.file_uploader("CICFlowMeter CSV", type=["csv"])
-            nrows = st.number_input("Max rows", 10_000, 1_000_000, 200_000, 10_000)
 
     # ── Build the state sequence ────────────────────────────────────
-    if source.startswith("Built-in"):
-        flows = flows_synthetic(minutes, int(seed))
-    else:
+    if source.startswith("Bundled"):
+        if not os.path.exists(SAMPLE_CAPTURE):
+            st.error(f"Bundled sample missing at {SAMPLE_CAPTURE}")
+            st.stop()
+        flows = flows_from_path(SAMPLE_CAPTURE, int(nrows))
+    elif source.startswith("Upload"):
         if not upload:
-            st.info("⬅ Upload a CICFlowMeter CSV, or switch to the built-in capture.")
+            st.info("⬅ Upload a CICFlowMeter CSV, or switch to the bundled capture.")
             st.stop()
         flows = flows_from_upload(upload.getvalue(), int(nrows))
+    else:
+        flows = flows_synthetic(minutes, int(seed))
 
     X, y_true, _ts = flows_to_state_windows(flows, window_seconds=ckpt["window_seconds"])
     if len(X) <= ckpt["window"]:

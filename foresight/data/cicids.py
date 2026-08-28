@@ -77,15 +77,35 @@ def load_cicids_csv(
 
     raw = pd.read_csv(path, nrows=nrows, low_memory=False, usecols=list(col.values()))
 
+    # Several public CIC-IDS-2018 CSVs were produced by concatenating capture
+    # chunks and carry the header row repeated mid-file (Label == "Label").
+    # Left in, every numeric column of those rows coerces to 0 and the stage
+    # mapper reads "Label" as BENIGN — i.e. they become fabricated all-zero
+    # benign flows in both training and evaluation.
+    if "label" in col:
+        header_rows = raw[col["label"]].astype(str).str.strip() == col["label"]
+        if header_rows.any():
+            print(f"{path}: dropping {int(header_rows.sum())} repeated header row(s)")
+            raw = raw[~header_rows].reset_index(drop=True)
+
     def num(canon: str, default=0.0) -> pd.Series:
         if canon in col:
             return pd.to_numeric(raw[col[canon]], errors="coerce").fillna(default)
         return pd.Series(default, index=raw.index, dtype=float)
 
     if "ts" in col:
-        ts_epoch = pd.to_datetime(
-            raw[col["ts"]], errors="coerce", dayfirst=True
-        ).astype("int64") / 1e9
+        # Force nanosecond resolution before the int64 cast. pandas >= 2.0
+        # infers the unit from the data and may return datetime64[us] or
+        # [s]; .astype("int64") then yields microseconds or seconds, and
+        # dividing by 1e9 silently produced timestamps 1e3 (or 1e9) times
+        # too small — collapsing a multi-hour capture into a few seconds,
+        # which in turn made every state window aggregate thousands of flows.
+        # The bug is version-dependent: correct on pandas with ns default,
+        # wrong on newer installs, so it must not be left implicit.
+        ts_epoch = (
+            pd.to_datetime(raw[col["ts"]], errors="coerce", dayfirst=True)
+            .astype("datetime64[ns]").astype("int64") / 1e9
+        )
     else:
         # No Timestamp column — use row order as pseudo-time (CICFlowMeter output
         # is roughly time-ordered; the world model learns transition order, which
