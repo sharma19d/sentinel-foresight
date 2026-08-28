@@ -68,7 +68,9 @@ def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
         return pd.Series(default, index=raw.index, dtype=float)
 
     if "ts" in col:
-        ts_epoch = pd.to_datetime(raw[col["ts"]], errors="coerce").view("int64") / 1e9
+        ts_epoch = pd.to_datetime(
+            raw[col["ts"]], errors="coerce", dayfirst=True
+        ).astype("int64") / 1e9
     else:
         # No Timestamp column — use row order as pseudo-time (CICFlowMeter output
         # is roughly time-ordered; the world model learns transition order, which
