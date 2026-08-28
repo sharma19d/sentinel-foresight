@@ -51,38 +51,6 @@ STATE_FEATURES = [
 N_FEATURES = len(STATE_FEATURES)
 
 
-def _aggregate_state(g: pd.DataFrame) -> list[float]:
-    """Collapse all flows in one time window into the ordered state vector."""
-    n = len(g)
-    if n == 0:
-        return [0.0] * N_FEATURES
-    syn, ack = float(g["syn"].sum()), float(g["ack"].sum())
-    uniq_ports = int(g["dst_port"].nunique())
-    proto = g["protocol"]
-    feats = {
-        "n_flows": float(n),
-        "tot_bytes": float(g["bytes"].sum()),
-        "tot_pkts": float(g["pkts"].sum()),
-        "mean_duration": float(g["duration"].mean()),
-        "std_duration": float(g["duration"].std(ddof=0) or 0.0),
-        "mean_bytes_per_flow": float(g["bytes"].mean()),
-        "mean_pkts_per_flow": float(g["pkts"].mean()),
-        "syn": syn, "ack": ack,
-        "fin": float(g["fin"].sum()), "rst": float(g["rst"].sum()),
-        "psh": float(g["psh"].sum()), "urg": float(g["urg"].sum()),
-        "syn_ack_ratio": syn / (ack + 1.0),
-        "n_unique_dst_ports": float(uniq_ports),
-        "port_scan_score": uniq_ports / (n + 1.0),
-        "n_unique_src": float(g["src_ip"].nunique()) if g["src_ip"].any() else 0.0,
-        "n_unique_dst": float(g["dst_ip"].nunique()) if g["dst_ip"].any() else 0.0,
-        "mean_iat": float(g["iat_mean"].mean()),
-        "std_iat": float(g["iat_mean"].std(ddof=0) or 0.0),
-        "frac_tcp": float((proto == 6).mean()),
-        "frac_udp": float((proto == 17).mean()),
-    }
-    return [feats[k] for k in STATE_FEATURES]
-
-
 def flows_to_state_windows(
     df: pd.DataFrame,
     window_seconds: float = 1.0,
@@ -100,33 +68,59 @@ def flows_to_state_windows(
     fill_gaps makes windows contiguous (empty windows become an all-zero
     "quiet network" state) so the model learns transitions over continuous time
     rather than jumping across gaps.
+
+    Implementation note: this is vectorised over pandas groupby aggregates
+    (not a per-window Python loop) — with window_seconds=1.0 a single day's
+    capture produces on the order of 10^5 windows, and a Python-level loop
+    at that scale is what made early runs of this look hung.
     """
     if df.empty:
         return pd.DataFrame(columns=STATE_FEATURES), np.array([], int), np.array([], float)
 
-    df = df.sort_values("ts")
+    df = df.sort_values("ts").copy()
     t0 = float(df["ts"].min())
-    win_idx = ((df["ts"] - t0) // window_seconds).astype(int)
-    df = df.assign(_win=win_idx)
+    df["_win"] = ((df["ts"] - t0) // window_seconds).astype(int)
+    df["_is_tcp"] = (df["protocol"] == 6).astype(float)
+    df["_is_udp"] = (df["protocol"] == 17).astype(float)
 
-    grouped = {w: g for w, g in df.groupby("_win")}
+    g = df.groupby("_win")
+    sums = g[["bytes", "pkts", "syn", "ack", "fin", "rst", "psh", "urg"]].sum()
+    means = g[["duration", "bytes", "pkts", "iat_mean", "_is_tcp", "_is_udp"]].mean()
+    stds = g[["duration", "iat_mean"]].std(ddof=0).fillna(0.0)
+    n_flows = g.size().astype(float)
+    n_ports = g["dst_port"].nunique().astype(float)
+    stage_max = g["stage"].max()
+
+    # IP columns are "" for every row when the dataset doesn't carry IPs at
+    # all (true for the public CIC-IDS-2018 CSVs); treat that dataset-wide
+    # rather than re-checking non-emptiness per window (matches practice —
+    # a loader either has IPs for every flow or none).
+    n_src = g["src_ip"].nunique().astype(float) if not (df["src_ip"] == "").all() else pd.Series(0.0, index=sums.index)
+    n_dst = g["dst_ip"].nunique().astype(float) if not (df["dst_ip"] == "").all() else pd.Series(0.0, index=sums.index)
+
+    agg = pd.DataFrame({
+        "n_flows": n_flows,
+        "tot_bytes": sums["bytes"], "tot_pkts": sums["pkts"],
+        "mean_duration": means["duration"], "std_duration": stds["duration"],
+        "mean_bytes_per_flow": means["bytes"], "mean_pkts_per_flow": means["pkts"],
+        "syn": sums["syn"], "ack": sums["ack"], "fin": sums["fin"], "rst": sums["rst"],
+        "psh": sums["psh"], "urg": sums["urg"],
+        "n_unique_dst_ports": n_ports,
+        "n_unique_src": n_src, "n_unique_dst": n_dst,
+        "mean_iat": means["iat_mean"], "std_iat": stds["iat_mean"],
+        "frac_tcp": means["_is_tcp"], "frac_udp": means["_is_udp"],
+    })
+    agg["syn_ack_ratio"] = agg["syn"] / (agg["ack"] + 1.0)
+    agg["port_scan_score"] = agg["n_unique_dst_ports"] / (agg["n_flows"] + 1.0)
+
     max_win = int(df["_win"].max())
-    win_range = range(0, max_win + 1) if fill_gaps else sorted(grouped)
+    full_range = range(0, max_win + 1) if fill_gaps else sorted(agg.index)
 
-    rows, stages, times = [], [], []
-    for w in win_range:
-        g = grouped.get(w)
-        if g is None:
-            rows.append([0.0] * N_FEATURES)
-            stages.append(int(AttackStage.BENIGN))
-        else:
-            rows.append(_aggregate_state(g))
-            stages.append(int(g["stage"].max()))
-        times.append(t0 + w * window_seconds)
-
-    X = pd.DataFrame(rows, columns=STATE_FEATURES)
+    X = agg.reindex(full_range, fill_value=0.0)[STATE_FEATURES]
     X = X.replace([np.inf, -np.inf], 0.0).fillna(0.0)
-    return X, np.asarray(stages, dtype=int), np.asarray(times, dtype=float)
+    stages = stage_max.reindex(full_range, fill_value=int(AttackStage.BENIGN)).astype(int).to_numpy()
+    times = t0 + np.asarray(full_range, dtype=float) * window_seconds
+    return X.reset_index(drop=True), stages, times
 
 
 def make_sequences(
