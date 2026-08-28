@@ -113,11 +113,11 @@ sentinel-foresight/
 │   │   └── world_model.py      ✅ Transformer/LSTM world model + heads + loss
 │   ├── rollout/
 │   │   └── rollout.py          ✅ K-step forward simulation + infiltration timeline
-│   └── explain/                ⏳ TODO — SHAP + attention attribution
+│   └── explain/                ✅ integrated gradients + attention (SHAP optional)
 ├── training/
 │   ├── train.py                ✅ Colab-ready trainer (synthetic + CIC path)
 │   └── README.md               ✅ Colab quickstart
-├── benchmark/                  ⏳ TODO — logistic-regression baseline + metrics
+├── benchmark/                  ✅ persistence / logreg / majority baselines + results.json
 ├── demo/                       ⏳ TODO — offline Streamlit upload-and-forecast app
 └── data/                       (datasets — gitignored)
 ```
@@ -135,15 +135,54 @@ Each phase is a self-contained, demoable increment. Status as of this writing:
 | **0** | Scaffold + port SENTINEL feature code | ✅ done |
 | **1** | Data foundation — state.py, CIC loader, synthetic gen | ✅ done |
 | **2** | World model + K-step rollout + Colab training script | ✅ done (code) |
-| **3** | **Run on Colab** — smoke test, then train on CIC-IDS-2018 | ⏳ **NEXT** |
-| **4** | Explainability — SHAP + attention viz (`foresight/explain/`) | ⏳ |
-| **5** | Benchmark — logistic-regression baseline, metrics table | ⏳ |
-| **6** | Offline Streamlit demo — upload → forecast timeline + stage + why | ⏳ |
+| **3** | **Run on Colab** — smoke test, then train on CIC-IDS-2018 | ✅ done (3 runs, best-epoch ckpt) |
+| **4** | Explainability — attribution + attention (`foresight/explain/`) | ✅ done |
+| **5** | Benchmark — baselines + metrics table | ✅ done — beats persistence & logreg |
+| **6** | Offline Streamlit demo — upload → forecast timeline + stage + why | ⏳ **NEXT** |
 | **7** | Polish — theming, recorded demo video, slides, README figures | ⏳ |
 | **S** | STRETCH — GNN encoder, CTU-13 second dataset, live SENTINEL bridge | optional |
 
 **Critical path to a submittable prototype:** 3 → 5 → 6 (train, benchmark, demo).
 Phase 4 (explainability) is required by the PS and is a judge favourite — do not skip.
+
+### Measured results (trained on all 10 days of CIC-IDS-2018, 4M flows)
+
+Validation split = the last 3 capture days, held out temporally (never randomly).
+Reproduce with `benchmark/baseline.py`; raw numbers in `benchmark/results.json`.
+
+**Dynamics — did it actually learn P(S_t+1 | S_t)?**
+
+| | next-state MSE |
+|---|---|
+| Persistence baseline (`S_t+1 = S_t`) | 0.902 |
+| **World model** | **0.562** (**−37.7%**) |
+
+This is the result that justifies the name: the model predicts the network's
+next state materially better than assuming nothing changes. Without clearing
+this bar, "world model" would have been an overclaim.
+
+**Detection — infiltration (stage ≥ Initial Access), 23.4% prevalence**
+
+| model | precision | recall | F1 | FPR |
+|---|---|---|---|---|
+| Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 |
+| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 |
+| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** |
+
+The temporal model beats the linear baseline by ~12× on F1 *and* halves the
+false-positive rate, so the sequence modelling is earning its complexity.
+
+**Known weakness — state it honestly, don't hide it:** recall is 0.252. The
+model is a high-confidence, low-noise detector (94.6% precision, 0.44% FPR)
+that still misses ~3 of every 4 attack windows. For an appliance that
+auto-blocks, precision-first is a defensible trade — but recall is the
+obvious target for the next iteration (longer windows, focal loss, or
+per-stage thresholds rather than a fixed 0.5).
+
+**Training note:** validation F1 swings violently between epochs (0.01→0.40 on
+this task), so `train.py` keeps the *best-val-F1* epoch, not the last one.
+The shipped checkpoint is epoch 3. Saving the final epoch instead scored
+0.161 — 2.5× worse for the same run.
 
 ### Phase 3 detail (do this next)
 1. Push repo to GitHub.
@@ -203,9 +242,9 @@ list + config). Inference runs offline on the laptop from that file.
 | Trained on labelled open dataset, reproducible | `training/train.py` (+ portable ckpt) |
 | K-step forecast + infiltration probability | `foresight/rollout/rollout.py` |
 | MITRE ATT&CK stage mapping | `foresight/mitre.py` + stage head |
-| Explainability (attention / SHAP) | attention in model; `foresight/explain/` (TODO) |
+| Explainability (attention / attribution) | `foresight/explain/` ✅ |
 | Offline demo (Streamlit) accepting PCAP/CSV | `demo/` (TODO) |
-| Benchmark vs logistic-regression baseline | `benchmark/` (TODO) |
+| Benchmark vs logistic-regression baseline | `benchmark/` ✅ (see results.json) |
 
 ---
 
