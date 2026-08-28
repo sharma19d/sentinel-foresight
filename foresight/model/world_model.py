@@ -128,10 +128,10 @@ class WorldModelLoss(nn.Module):
     lambda_stage balances them.
     """
 
-    def __init__(self, lambda_stage: float = 1.0):
+    def __init__(self, lambda_stage: float = 1.0, class_weights: torch.Tensor | None = None):
         super().__init__()
         self.mse = nn.MSELoss()
-        self.ce = nn.CrossEntropyLoss()
+        self.ce = nn.CrossEntropyLoss(weight=class_weights)
         self.lambda_stage = lambda_stage
 
     def forward(self, pred_state, pred_stage_logits, true_state, true_stage):

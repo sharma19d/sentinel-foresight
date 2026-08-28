@@ -35,7 +35,7 @@ from sklearn.preprocessing import StandardScaler
 from foresight.data.state import flows_to_state_windows, make_sequences, STATE_FEATURES
 from foresight.data.synth import make_synthetic_flows
 from foresight.model.world_model import (
-    WorldModel, WorldModelConfig, WorldModelLoss, infiltration_prob, INFILTRATION_STAGE,
+    WorldModel, WorldModelConfig, WorldModelLoss, infiltration_prob, INFILTRATION_STAGE, N_STAGES,
 )
 
 
@@ -125,7 +125,23 @@ def build_dataset(args):
     def ds(xseq, ynext, ystage):
         return TensorDataset(torch.tensor(xseq), torch.tensor(ynext),
                              torch.tensor(ystage, dtype=torch.long))
-    return ds(Xseq_tr, Ynext_tr, Ystage_tr), ds(Xseq_va, Ynext_va, Ystage_va), scaler
+
+    # Inverse-frequency class weights from the TRAIN split only (no val
+    # leakage). CIC-IDS-2018 is overwhelmingly benign, so unweighted CE
+    # lets the model default to predicting the majority stage — that's why
+    # the first real training run got 96% infiltration precision but only
+    # 12% recall (confident, but barely ever fires). Clamp to keep rare
+    # classes from dominating the loss and destabilising training.
+    # Sized to N_STAGES (the model's fixed stage_head output), not just
+    # whatever stages happen to appear in this training split.
+    counts = np.bincount(Ystage_tr, minlength=N_STAGES)[:N_STAGES].astype(np.float64)
+    counts[counts == 0] = 1.0  # avoid div-by-zero for a stage absent from train
+    weights = len(Ystage_tr) / (N_STAGES * counts)
+    weights = np.clip(weights, 0.1, 20.0).astype(np.float32)
+    print(f"class weights (stage 0..{N_STAGES-1}): {weights.round(2).tolist()}")
+
+    return (ds(Xseq_tr, Ynext_tr, Ystage_tr), ds(Xseq_va, Ynext_va, Ystage_va),
+            scaler, torch.tensor(weights))
 
 
 @torch.no_grad()
@@ -171,14 +187,14 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}")
 
-    train_ds, val_ds, scaler = build_dataset(args)
+    train_ds, val_ds, scaler, class_weights = build_dataset(args)
     train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True)
     val_dl = DataLoader(val_ds, batch_size=args.batch)
 
     cfg = WorldModelConfig(n_features=len(STATE_FEATURES), window=args.window, encoder=args.encoder)
     model = WorldModel(cfg).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_fn = WorldModelLoss(lambda_stage=args.lambda_stage)
+    loss_fn = WorldModelLoss(lambda_stage=args.lambda_stage, class_weights=class_weights.to(device))
     print(f"model: {cfg.encoder}  params: {sum(p.numel() for p in model.parameters()):,}")
 
     for ep in range(1, args.epochs + 1):
