@@ -50,7 +50,9 @@ def _resolve(cols: list[str]) -> dict[str, str]:
     return found
 
 
-def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
+def load_cicids_csv(
+    path: str, nrows: int | None = None, require_label: bool = True,
+) -> pd.DataFrame:
     """
     Load one CIC-IDS-2018 CSV into the canonical flow schema.
 
@@ -62,10 +64,15 @@ def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
     earlier version did) inflates per-file memory ~6x for no benefit; across
     10 files that compounds (freed pandas/glibc memory doesn't fully return
     to the OS between files) until the process gets OOM-killed.
+
+    require_label=False allows loading an UNLABELLED capture: real traffic
+    being scored at inference time has no ground-truth Label column, so the
+    demo path must not require one. Labels are then blank and every stage is
+    BENIGN — placeholders that inference ignores, never to be read as truth.
     """
     header_cols = list(pd.read_csv(path, nrows=0).columns)
     col = _resolve(header_cols)
-    if "label" not in col:
+    if "label" not in col and require_label:
         raise ValueError(f"{path}: not a recognised CIC-IDS CSV (no Label column)")
 
     raw = pd.read_csv(path, nrows=nrows, low_memory=False, usecols=list(col.values()))
@@ -99,7 +106,7 @@ def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
         "syn": num("syn"), "ack": num("ack"), "fin": num("fin"),
         "rst": num("rst"), "psh": num("psh"), "urg": num("urg"),
         "iat_mean": (num("iat_mean") / 1e6),              # µs → s
-        "label": raw[col["label"]].astype(str),
+        "label": raw[col["label"]].astype(str) if "label" in col else "",
     })
     out = out.replace([np.inf, -np.inf], np.nan).dropna(subset=["ts"]).reset_index(drop=True)
 
