@@ -114,6 +114,18 @@ def flows_to_state_windows(
     agg["port_scan_score"] = agg["n_unique_dst_ports"] / (agg["n_flows"] + 1.0)
 
     max_win = int(df["_win"].max())
+    if fill_gaps and max_win > 20_000_000:
+        # A handful of malformed timestamps (seen in real CIC-IDS-2018 CSVs —
+        # e.g. one row stamped ~1970 instead of the file's actual date) can
+        # inflate the apparent time span from hours to decades. fill_gaps
+        # would then try to allocate one row per elapsed second across that
+        # whole span — fail loudly here instead of silently exhausting RAM.
+        raise ValueError(
+            f"flows_to_state_windows: {max_win + 1:,} windows requested "
+            f"(window_seconds={window_seconds}) — this almost always means "
+            f"the input has an outlier timestamp inflating the time span; "
+            f"check df['ts'].describe() before calling this."
+        )
     full_range = range(0, max_win + 1) if fill_gaps else sorted(agg.index)
 
     X = agg.reindex(full_range, fill_value=0.0)[STATE_FEATURES]

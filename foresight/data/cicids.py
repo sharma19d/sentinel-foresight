@@ -102,5 +102,21 @@ def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
         "label": raw[col["label"]].astype(str),
     })
     out = out.replace([np.inf, -np.inf], np.nan).dropna(subset=["ts"]).reset_index(drop=True)
+
+    # Some public CIC-IDS-2018 CSVs carry a handful of rows with a garbage
+    # Timestamp (e.g. epoch ~1970 instead of the file's actual 2018 date).
+    # A single such row makes the file's apparent time span ~1.5 BILLION
+    # seconds instead of a few hours; flows_to_state_windows()'s fill_gaps
+    # then tries to allocate one zero-row per elapsed second across that
+    # entire span, which OOMs the process. Drop rows whose timestamp is far
+    # from the file's median before any windowing sees them.
+    if len(out) and "ts" in col:
+        median_ts = out["ts"].median()
+        keep = (out["ts"] - median_ts).abs() <= 2 * 86400  # within 2 days of the file's typical timestamp
+        n_bad = int((~keep).sum())
+        if n_bad:
+            print(f"{path}: dropping {n_bad} row(s) with a corrupted Timestamp far outside the file's date")
+            out = out[keep].reset_index(drop=True)
+
     out["stage"] = out["label"].map(stage_from_label).astype(int)
     return out
