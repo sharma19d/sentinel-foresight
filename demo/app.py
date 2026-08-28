@@ -27,6 +27,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from foresight.data.drift import check_drift
 from foresight.data.state import flows_to_state_windows, STATE_FEATURES
 from foresight.data.synth import make_synthetic_flows
 from foresight.explain import explain
@@ -125,6 +126,13 @@ def main():
 
     Xs = ((X.values.astype(np.float32) - mean) / scale).astype(np.float32)
     has_labels = bool(flows["label"].astype(str).str.len().max())
+
+    # Refuse to present a confident-looking forecast on traffic the model was
+    # never trained for. Without this the app will happily draw a flat 100%
+    # risk line on out-of-distribution input and look authoritative doing it.
+    drift = check_drift(Xs)
+    if not drift.in_distribution:
+        st.warning(drift.message())
 
     with st.spinner(f"Rolling the world model {k_steps} steps ahead…"):
         idx, hprob, hstage = forecast_series(
