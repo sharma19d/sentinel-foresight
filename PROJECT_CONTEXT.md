@@ -118,7 +118,7 @@ sentinel-foresight/
 │   ├── train.py                ✅ Colab-ready trainer (synthetic + CIC path)
 │   └── README.md               ✅ Colab quickstart
 ├── benchmark/                  ✅ persistence / logreg / majority baselines + results.json
-├── demo/                       ⏳ TODO — offline Streamlit upload-and-forecast app
+├── demo/                       ✅ offline Streamlit forecast-timeline app (CSV; PCAP pending)
 └── data/                       (datasets — gitignored)
 ```
 
@@ -138,8 +138,8 @@ Each phase is a self-contained, demoable increment. Status as of this writing:
 | **3** | **Run on Colab** — smoke test, then train on CIC-IDS-2018 | ✅ done (3 runs, best-epoch ckpt) |
 | **4** | Explainability — attribution + attention (`foresight/explain/`) | ✅ done |
 | **5** | Benchmark — baselines + metrics table | ✅ done — beats persistence & logreg |
-| **6** | Offline Streamlit demo — upload → forecast timeline + stage + why | ⏳ **NEXT** |
-| **7** | Polish — theming, recorded demo video, slides, README figures | ⏳ |
+| **6** | Offline Streamlit demo — forecast timeline + stage + why | ✅ built (CSV) · ⏳ PCAP ingest |
+| **7** | Polish — theming, recorded demo video, slides, README figures | ⏳ **NEXT** |
 | **S** | STRETCH — GNN encoder, CTU-13 second dataset, live SENTINEL bridge | optional |
 
 **Critical path to a submittable prototype:** 3 → 5 → 6 (train, benchmark, demo).
@@ -243,7 +243,7 @@ list + config). Inference runs offline on the laptop from that file.
 | K-step forecast + infiltration probability | `foresight/rollout/rollout.py` |
 | MITRE ATT&CK stage mapping | `foresight/mitre.py` + stage head |
 | Explainability (attention / attribution) | `foresight/explain/` ✅ |
-| Offline demo (Streamlit) accepting PCAP/CSV | `demo/` (TODO) |
+| Offline demo (Streamlit) accepting PCAP/CSV | `demo/` ✅ CSV · ⏳ **PCAP not yet implemented** |
 | Benchmark vs logistic-regression baseline | `benchmark/` ✅ (see results.json) |
 
 ---
