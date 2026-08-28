@@ -283,8 +283,10 @@ The three things that win: (1) **forecast-before-compromise** timeline,
 
 ## 10. Environment & constraints
 
-- **No strong local GPU.** Training → **Google Colab** (free T4). Inference/demo →
-  laptop CPU (light). Torch is *not* installed locally by choice.
+- **No strong local GPU.** Training → **Google Colab** (free T4), driven from
+  the terminal via `google-colab-cli` (see §12). Inference/demo → laptop CPU;
+  CPU-only torch **is** now installed locally in `.venv/` and the demo runs
+  offline there.
 - **Datasets are large** (CIC-IDS-2018 ~16M flows). Use `--nrows` subsets / specific
   attack days to fit free Colab. Report as a prototype under stated constraints.
 - **Ported code provenance:** `foresight/features/*` are copied unchanged from
@@ -300,3 +302,128 @@ The three things that win: (1) **forecast-before-compromise** timeline,
 - **Rollout** — feeding predictions back to simulate K steps into the future.
 - **Kill chain / stage** — Recon → Initial Access → Lateral Movement → C2 → Exfil.
 - **Infiltration probability** — P(state is at/after Initial Access).
+
+---
+
+## 12. RESUME HERE — state as of 2026-08-28
+
+Everything through Phase 6 is built, trained, benchmarked, and **verified by
+actually running it**. This section is what you need to pick the work back up
+cold, months later, with no memory of the session.
+
+### Environment setup (one-time, ~10 min)
+
+```bash
+cd sentinel-foresight
+python3 -m venv .venv
+.venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+.venv/bin/pip install streamlit pandas numpy scikit-learn
+.venv/bin/streamlit run demo/app.py        # works offline, bundled sample
+```
+
+`.venv/` and `checkpoints/` are gitignored — the trained weights are **not in
+git**. If `checkpoints/world_model_best.pt` is missing, retrain (below).
+
+### Training on Colab — driven from the terminal, no browser
+
+`google-colab-cli` lets an agent run Colab directly, which removed all
+copy-paste from the workflow. Setup:
+
+```bash
+pipx install google-colab-cli
+# jupyter_kernel_client 1.x breaks `colab exec`; pin the last working release:
+/path/to/pipx/venvs/google-colab-cli/bin/python -m pip install "jupyter_kernel_client==0.15.0"
+
+# gcloud ADC needs all four scopes or the keep-alive 403s:
+gcloud auth application-default login \
+  --scopes="openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/colaboratory"
+```
+
+Then (note `--auth=adc` is required on **every** call — the installed CLI
+defaults to oauth2 despite its docs):
+
+```bash
+colab --auth=adc new -s foresight --gpu T4
+colab --auth=adc exec -s foresight --timeout 60   # pipe python via stdin, or -f script.py
+colab --auth=adc download -s foresight /content/... ./local
+colab --auth=adc stop -s foresight                # ALWAYS — idle VMs burn quota
+```
+
+Gotchas learned the hard way:
+- **Only one GPU session per account.** A leftover browser runtime causes
+  `TooManyAssignmentsError` (412); disconnect it in the browser first.
+- **`colab exec` has a 30 s default timeout** and killing the CLI does *not*
+  kill the remote process. Launch long jobs with `nohup ... > log 2>&1 &` via
+  `subprocess.Popen`, then poll the log.
+- **VMs get reclaimed mid-run.** Anything not downloaded is lost — a run was
+  lost this way. Download checkpoints as soon as they are written.
+
+Full training run (~11 min on a T4: ~4 min load, ~13 s/epoch):
+
+```bash
+python3 training/train.py --data "data/cicids/*.csv" --nrows 400000 \
+  --window 16 --k 4 --encoder transformer --epochs 30 --batch 256 --lr 1e-3 \
+  --out /content/foresight_ckpt
+```
+
+Dataset: `kaggle datasets download -d solarmainframe/ids-intrusion-csv --unzip`
+(6.5 GB, 10 days). Kaggle now issues a single `KGAT_...` token → write it to
+`~/.kaggle/access_token` (chmod 600), **not** the old `kaggle.json`.
+
+### Bugs already fixed — do not reintroduce
+
+Each of these was silent, and several only appeared when the code ran on a
+second machine. They are the reason the pipeline is trustworthy now:
+
+1. **`pd.to_datetime().astype("int64") / 1e9`** — only correct at nanosecond
+   resolution. pandas ≥ 2.0 infers the unit and may return `datetime64[us]`,
+   making every timestamp 1000× too small and collapsing a multi-hour capture
+   into seconds. Colab had ns, the laptop had µs — so it worked in training and
+   broke everywhere else. Always force `.astype("datetime64[ns]")` first.
+2. **Repeated header rows** mid-file in several CIC CSVs (`Label == "Label"`)
+   became fabricated all-zero benign flows.
+3. **Corrupted timestamps** (a 1970 row in a 2018 file) inflated the apparent
+   span to ~1.5 billion seconds; `fill_gaps` then tried to allocate one row per
+   elapsed second and OOM-killed the process. Filtered by distance from median;
+   `state.py` also hard-fails above 20M windows instead of exhausting RAM.
+4. **Per-day windowing** — concatenating all 10 days into one timeline made
+   sequences span overnight gaps, teaching transitions that never happened.
+5. **Memory** — loading all 10 raw frames at once (each ~80 columns when only
+   ~16 are used) OOM-killed free-tier Colab. Now: `usecols`, one file at a time,
+   `gc.collect()` + `malloc_trim(0)`.
+6. **Last-epoch checkpointing** — val F1 swings 0.01→0.40 between epochs, so
+   saving epoch 30 saved noise. `train.py` now keeps the best-val-F1 epoch (the
+   shipped checkpoint is **epoch 3**; epoch 30 scored 2.5× worse).
+7. **Out-of-distribution saturation** — the synthetic fixture sits ~53σ from the
+   training distribution and made the model report ~100% risk on *every* window,
+   benign included. `foresight/data/drift.py` now warns instead of rendering a
+   confident-looking lie.
+
+### What to do next, in order
+
+1. **PCAP ingest** *(closes a stated PS deliverable)* — the PS asks for a demo
+   accepting "PCAP or CSV" and `scapy` is already in `requirements.txt`, but
+   nothing uses it. Write `foresight/data/pcap.py`: PCAP → the canonical flow
+   DataFrame (`CANONICAL_COLUMNS` in `state.py`), reusing
+   `foresight/features/packet_features.py`. Then add it to the demo's uploader.
+   A judge dropping in a `.pcap` and getting nothing would be a bad moment.
+2. **Improve Infiltration recall** — the real weakness (AUC 0.466). Ideas, in
+   rough order of expected value: focal loss instead of flat class weights; a
+   longer `--window` (Infiltration unfolds slowly); per-stage thresholds rather
+   than a fixed 0.5; adding host-level fan-in/fan-out features, which need the
+   IP columns the public CSVs drop (CTU-13 has them).
+3. **Phase 7 polish** — slides, recorded demo video, README screenshots.
+4. *(Stretch)* CTU-13 as a second dataset; GNN encoder; live SENTINEL bridge.
+
+### Reproducing the numbers
+
+```bash
+python3 benchmark/baseline.py --data "data/cicids/*.csv" --nrows 400000 \
+  --ckpt checkpoints/world_model_best.pt
+```
+
+`benchmark/results.json` holds the committed results, including the per-day
+breakdown. The demo sample is a real held-out slice (2018-03-02 09:40–11:00,
+54% attack windows) — deliberately **not** a training day, and deliberately Bot
+traffic, which is where the model actually works. Both facts are stated in
+`demo/README.md` so the choice is transparent rather than quiet cherry-picking.
