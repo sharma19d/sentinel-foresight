@@ -39,44 +39,78 @@ from foresight.model.world_model import (
 )
 
 
-def load_flows(args):
+def load_flow_frames(args):
+    """Return a list of per-capture-session flow DataFrames.
+
+    Each CIC-IDS-2018 CSV is one day's capture. Days must stay separate:
+    concatenating them into one timeline and then windowing by wall-clock
+    time would force the model to "learn" a transition across the overnight
+    gap between Friday's traffic and Monday's, which is meaningless and
+    (with fill_gaps) blows up window count to one per elapsed second across
+    the whole multi-day span instead of per second of actual capture.
+    """
     if args.data:
-        import pandas as pd
         from foresight.data.cicids import load_cicids_csv
         files = sorted(glob.glob(args.data))
         if not files:
             raise SystemExit(f"no files match {args.data!r}")
         print(f"loading {len(files)} CIC-IDS CSV(s)…")
-        df = pd.concat([load_cicids_csv(f, nrows=args.nrows) for f in files], ignore_index=True)
-        print(f"  {len(df):,} flows, labels: {sorted(df.label.unique())[:8]}")
-        return df
+        frames = []
+        for f in files:
+            df = load_cicids_csv(f, nrows=args.nrows)
+            print(f"  {f}: {len(df):,} flows")
+            frames.append(df)
+        return frames
     print("no --data given → synthetic attack-progression traffic (smoke test)")
-    return make_synthetic_flows(seed=args.seed, minutes=8.0)
+    return [make_synthetic_flows(seed=args.seed, minutes=8.0)]
 
 
 def build_dataset(args):
-    df = load_flows(args)
-    X, y, ts = flows_to_state_windows(df, window_seconds=args.window_seconds)
-    print(f"state windows: {len(X)}  features: {X.shape[1]}")
+    frames = load_flow_frames(args)
 
-    Xv = X.values.astype(np.float32)
-    split_w = max(args.window + 1, int(0.7 * len(Xv)))     # temporal split point (windows)
+    # Window each capture session independently, then concatenate the
+    # resulting sequences — never the raw per-second windows — so no
+    # sequence's lookback window crosses a day boundary.
+    per_file_X, per_file_y = [], []
+    for df in frames:
+        X, y, _ts = flows_to_state_windows(df, window_seconds=args.window_seconds)
+        per_file_X.append(X.values.astype(np.float32))
+        per_file_y.append(y)
+    n_windows = sum(len(x) for x in per_file_X)
+    print(f"state windows: {n_windows}  features: {per_file_X[0].shape[1]}")
 
-    scaler = StandardScaler().fit(Xv[:split_w])            # fit on TRAIN only (no leakage)
-    Xs = scaler.transform(Xv).astype(np.float32)
+    # Temporal split: earlier files (days) are train, later ones val — no
+    # leakage, and no split boundary falls inside a single day's sequence.
+    split_file = max(1, int(round(0.7 * len(per_file_X))))
+    split_file = min(split_file, len(per_file_X) - 1) if len(per_file_X) > 1 else len(per_file_X)
 
-    Xseq, Ynext, Ystage = make_sequences(Xs, y, window=args.window)
-    if len(Xseq) < 8:
-        raise SystemExit("too few sequences — lower --window or --window-seconds")
+    Xv_train = np.concatenate(per_file_X[:split_file], axis=0) if split_file else per_file_X[0][:0]
+    scaler = StandardScaler().fit(Xv_train)                # fit on TRAIN files only (no leakage)
 
-    split_seq = max(1, split_w - args.window)              # align seq split to the window split
-    tr = slice(0, split_seq); va = slice(split_seq, None)
-    print(f"sequences: {len(Xseq)}  train: {split_seq}  val: {len(Xseq) - split_seq}")
+    def sequences_for(files_slice):
+        xs, yn, ys = [], [], []
+        for X, y in files_slice:
+            Xs = scaler.transform(X).astype(np.float32)
+            xseq, ynext, ystage = make_sequences(Xs, y, window=args.window)
+            if len(xseq):
+                xs.append(xseq); yn.append(ynext); ys.append(ystage)
+        if not xs:
+            F = Xv_train.shape[1]
+            return (np.empty((0, args.window, F), np.float32),
+                    np.empty((0, F), np.float32), np.empty((0,), int))
+        return np.concatenate(xs), np.concatenate(yn), np.concatenate(ys)
 
-    def ds(sl):
-        return TensorDataset(torch.tensor(Xseq[sl]), torch.tensor(Ynext[sl]),
-                             torch.tensor(Ystage[sl], dtype=torch.long))
-    return ds(tr), ds(va), scaler
+    paired = list(zip(per_file_X, per_file_y))
+    Xseq_tr, Ynext_tr, Ystage_tr = sequences_for(paired[:split_file])
+    Xseq_va, Ynext_va, Ystage_va = sequences_for(paired[split_file:])
+    if len(Xseq_tr) < 8:
+        raise SystemExit("too few training sequences — lower --window or --window-seconds")
+    print(f"sequences: train {len(Xseq_tr)}  val {len(Xseq_va)}")
+
+    def ds(xseq, ynext, ystage):
+        return TensorDataset(torch.tensor(xseq), torch.tensor(ynext),
+                             torch.tensor(ystage, dtype=torch.long))
+    return ds(Xseq_tr, Ynext_tr, Ystage_tr), ds(Xseq_va, Ynext_va, Ystage_va), scaler
 
 
 @torch.no_grad()
