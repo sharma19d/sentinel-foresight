@@ -57,6 +57,11 @@ def build_dataset(args):
     the whole multi-day span instead of per second of actual capture.
     """
     import gc
+    try:
+        import ctypes
+        _libc = ctypes.CDLL("libc.so.6")
+    except OSError:
+        _libc = None  # non-glibc platform (e.g. macOS) — gc.collect() alone still runs
 
     per_file_X, per_file_y = [], []
     if args.data:
@@ -73,6 +78,12 @@ def build_dataset(args):
             per_file_y.append(y)
             del df, X
             gc.collect()
+            # gc.collect() frees Python objects, but glibc's malloc often keeps
+            # the underlying pages rather than returning them to the OS — over
+            # 10 files that's what compounded into an OOM kill. malloc_trim(0)
+            # forces the freed arenas back, so RSS actually drops between files.
+            if _libc is not None:
+                _libc.malloc_trim(0)
     else:
         print("no --data given → synthetic attack-progression traffic (smoke test)")
         df = make_synthetic_flows(seed=args.seed, minutes=8.0)

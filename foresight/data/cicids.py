@@ -56,11 +56,19 @@ def load_cicids_csv(path: str, nrows: int | None = None) -> pd.DataFrame:
 
     Duration is reported by CICFlowMeter in microseconds → converted to seconds.
     Missing IP columns are filled with "" (state.py degrades gracefully).
+
+    Reads only the ~14 columns this loader actually uses, via `usecols` —
+    CICFlowMeter CSVs carry ~80 columns, and reading all of them (as an
+    earlier version did) inflates per-file memory ~6x for no benefit; across
+    10 files that compounds (freed pandas/glibc memory doesn't fully return
+    to the OS between files) until the process gets OOM-killed.
     """
-    raw = pd.read_csv(path, nrows=nrows, low_memory=False)
-    col = _resolve(list(raw.columns))
+    header_cols = list(pd.read_csv(path, nrows=0).columns)
+    col = _resolve(header_cols)
     if "label" not in col:
         raise ValueError(f"{path}: not a recognised CIC-IDS CSV (no Label column)")
+
+    raw = pd.read_csv(path, nrows=nrows, low_memory=False, usecols=list(col.values()))
 
     def num(canon: str, default=0.0) -> pd.Series:
         if canon in col:
