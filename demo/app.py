@@ -39,16 +39,6 @@ DEFAULT_CKPT = os.path.join(
     "checkpoints", "world_model_best.pt",
 )
 
-STAGE_COLOUR = {
-    AttackStage.BENIGN: "#2e7d32",
-    AttackStage.RECONNAISSANCE: "#f9a825",
-    AttackStage.INITIAL_ACCESS: "#ef6c00",
-    AttackStage.LATERAL_MOVEMENT: "#d84315",
-    AttackStage.COMMAND_AND_CONTROL: "#c62828",
-    AttackStage.EXFILTRATION: "#6a1b9a",
-}
-
-
 def stage_name(s: int) -> str:
     return AttackStage(int(s)).name.replace("_", " ").title()
 
@@ -183,12 +173,20 @@ def main():
 
     # ── Why? ────────────────────────────────────────────────────────
     st.subheader("Why this forecast?")
-    pos = st.slider("Inspect window", int(idx[0]), int(idx[-1]), int(idx[peak_i]))
+    if idx[0] == idx[-1]:
+        pos = int(idx[0])                       # single forecast point — no slider to draw
+        st.caption(f"Only one forecast position available (window {pos}).")
+    else:
+        pos = st.slider("Inspect window", int(idx[0]), int(idx[-1]), int(idx[peak_i]))
+
     seeds = sliding_windows(Xs, ckpt["window"])
     seed_i = min(max(pos - (ckpt["window"] - 1), 0), len(seeds) - 1)
+    # sliding_windows returns a strided view; make it contiguous before it
+    # crosses into torch.
+    seed = np.ascontiguousarray(seeds[seed_i])
 
-    e = explain(model, seeds[seed_i], steps=32)
-    fc = rollout(model, torch.from_numpy(np.ascontiguousarray(seeds[seed_i])), k_steps=k_steps)
+    e = explain(model, seed, steps=32)
+    fc = rollout(model, torch.from_numpy(seed), k_steps=k_steps)
 
     st.markdown(f"**{e.summary()}**")
     if e.completeness_error > 0.05:
