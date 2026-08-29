@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
 from foresight.data.state import STATE_FEATURES
 from foresight.model.world_model import (
@@ -46,8 +47,15 @@ from foresight.model.world_model import (
 from training.train import build_dataset
 
 
-def binary_scores(pred: np.ndarray, true: np.ndarray) -> dict:
-    """Precision/recall/F1/FPR for the infiltration (stage >= INITIAL_ACCESS) call."""
+def binary_scores(pred: np.ndarray, true: np.ndarray,
+                  score: np.ndarray | None = None) -> dict:
+    """Precision/recall/F1/FPR for the infiltration (stage >= INITIAL_ACCESS) call.
+
+    `score` is the underlying continuous score, used for ROC-AUC. F1 at a fixed
+    0.5 threshold rewards whichever model happens to sit well against that
+    cut-off and can make a baseline look far weaker than it is; AUC is
+    threshold-free, so both numbers are reported and disagreements are visible.
+    """
     pred, true = pred.astype(bool), true.astype(bool)
     tp = int((pred & true).sum())
     fp = int((pred & ~true).sum())
@@ -57,8 +65,11 @@ def binary_scores(pred: np.ndarray, true: np.ndarray) -> dict:
     rec = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
     fpr = fp / (fp + tn) if fp + tn else 0.0
-    return {"precision": prec, "recall": rec, "f1": f1, "fpr": fpr,
-            "tp": tp, "fp": fp, "fn": fn, "tn": tn}
+    out = {"precision": prec, "recall": rec, "f1": f1, "fpr": fpr,
+           "tp": tp, "fp": fp, "fn": fn, "tn": tn}
+    if score is not None and 0 < true.mean() < 1:
+        out["auc"] = float(roc_auc_score(true, score))
+    return out
 
 
 def main():
@@ -133,6 +144,31 @@ def main():
     maj = np.zeros_like(true_inf)                    # always predict "benign"
     results["detect_majority"] = binary_scores(maj, true_inf)
 
+    # Strongest trivial baseline: the single best raw state feature. Chosen on
+    # TRAIN only, then scored on val. This is the bar that matters — a 231k-
+    # parameter temporal model that cannot beat one raw column has not earned
+    # its complexity, and reporting only the (weak) logistic-regression number
+    # would hide that.
+    last_tr, last_va = Xtr[:, -1, :], Xva[:, -1, :]
+    ytr_bin = (Str >= INFILTRATION_STAGE)
+    best_i, best_auc = 0, 0.0
+    for i in range(last_tr.shape[1]):
+        col = last_tr[:, i]
+        if np.ptp(col) == 0:
+            continue
+        a = roc_auc_score(ytr_bin, col)
+        if abs(a - 0.5) > abs(best_auc - 0.5):
+            best_i, best_auc = i, a
+    # A strongly anti-correlated feature separates just as well; flip it so the
+    # baseline is scored at its true strength rather than handicapped.
+    sign = 1.0 if best_auc >= 0.5 else -1.0
+    feat_score = sign * last_va[:, best_i]
+    thr = np.median(sign * last_tr[:, best_i][ytr_bin]) if ytr_bin.any() else 0.0
+    results["detect_best_feature"] = binary_scores(feat_score >= thr, true_inf, feat_score)
+    results["detect_best_feature"]["feature"] = STATE_FEATURES[best_i]
+    print(f"\n[detect] best single train feature: {STATE_FEATURES[best_i]} "
+          f"(train AUC {best_auc:.3f})")
+
     # Logistic regression gets the SAME input the transformer gets: the full
     # flattened window, already scaled by the same train-fit scaler. Anything
     # less would be a straw-man baseline.
@@ -140,21 +176,25 @@ def main():
     t0 = time.time()
     lr = LogisticRegression(max_iter=1000, class_weight="balanced", n_jobs=-1)
     lr.fit(Xtr.reshape(len(Xtr), -1), ytr)
-    lr_pred = lr.predict(Xva.reshape(len(Xva), -1)).astype(bool)
-    results["detect_logreg"] = binary_scores(lr_pred, true_inf)
+    Xva_flat = Xva.reshape(len(Xva), -1)
+    lr_pred = lr.predict(Xva_flat).astype(bool)
+    results["detect_logreg"] = binary_scores(
+        lr_pred, true_inf, lr.predict_proba(Xva_flat)[:, 1])
     print(f"\n[detect] logistic regression fitted in {time.time()-t0:.1f}s")
 
-    wm_pred = (infiltration_prob(logits).numpy() >= 0.5)
-    results["detect_world_model"] = binary_scores(wm_pred, true_inf)
+    wm_score = infiltration_prob(logits).numpy()
+    results["detect_world_model"] = binary_scores(wm_score >= 0.5, true_inf, wm_score)
 
     rows = [("majority (always benign)", results["detect_majority"]),
+            (f"best single feature", results["detect_best_feature"]),
             ("logistic regression", results["detect_logreg"]),
             ("world model", results["detect_world_model"])]
-    print(f"\n{'model':<26} {'precision':>9} {'recall':>8} {'F1':>7} {'FPR':>8}")
-    print("-" * 62)
+    print(f"\n{'model':<26} {'precision':>9} {'recall':>8} {'F1':>7} {'FPR':>8} {'AUC':>7}")
+    print("-" * 70)
     for name, m in rows:
+        auc = f"{m['auc']:.3f}" if "auc" in m else "  n/a"
         print(f"{name:<26} {m['precision']:>9.3f} {m['recall']:>8.3f} "
-              f"{m['f1']:>7.3f} {m['fpr']:>8.4f}")
+              f"{m['f1']:>7.3f} {m['fpr']:>8.4f} {auc:>7}")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as f:

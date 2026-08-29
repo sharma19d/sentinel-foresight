@@ -23,11 +23,21 @@ by `training/train.py`); the path is editable in the sidebar.
 
 ## Traffic sources
 
-**Built-in synthetic attack (default).** Generates a capture that walks through
-benign → reconnaissance → brute-force → C2 → benign. This is the default on
-purpose: a live demo shouldn't depend on a 6.5 GB dataset being present on the
-machine, and the scripted progression makes the forecast's behaviour legible in
-a single screen.
+**Bundled real capture (default).** An 80-minute slice of CIC-IDS-2018,
+2018-03-02 09:40–11:00 — 152k flows, 54% attack windows. Ships with the repo
+(1.9 MB) so a live demo never depends on the 6.5 GB dataset being present.
+
+Two choices worth stating plainly rather than leaving for someone to notice:
+it is a **held-out** day the model never trained on, and it is the **Bot/C2**
+day, where the model genuinely works (AUC 0.894) rather than an Infiltration
+day, where it is at or below chance (AUC 0.466). Measured on this sample:
+AUC 0.731, precision 0.94 at the 0.9 threshold.
+
+**Synthetic generator (third option).** Walks benign → recon → brute-force →
+C2 → benign. Predates the real data and its feature scales sit ~53σ outside the
+training distribution, so the model saturates near 100% on every window of it,
+benign included. Kept as a test fixture, and the app raises a drift warning on
+it — do not demo with this.
 
 **Upload a raw PCAP** (`.pcap` / `.pcapng`). Packets are reassembled into flows
 locally with scapy — nothing leaves the machine. The flow features follow
