@@ -140,7 +140,7 @@ Each phase is a self-contained, demoable increment. Status as of this writing:
 | **4** | Explainability — attribution + attention (`foresight/explain/`) | ✅ done |
 | **5** | Benchmark — baselines + metrics table | ✅ done — beats persistence & logreg |
 | **6** | Offline Streamlit demo — forecast timeline + stage + why | ✅ done (CSV **and PCAP**) |
-| **7** | Polish — theming, recorded demo video, slides, README figures | ⏳ **NEXT** |
+| **7** | Polish — PRESENTING.md ✅ · demo video + slides still ⏳ |
 | **S** | STRETCH — GNN encoder, CTU-13 second dataset, live SENTINEL bridge | optional |
 
 **Critical path to a submittable prototype:** 3 → 5 → 6 (train, benchmark, demo).
@@ -167,34 +167,46 @@ this bar, "world model" would have been an overclaim.
 | model | precision | recall | F1 | FPR | AUC |
 |---|---|---|---|---|---|
 | Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 | n/a |
-| Best single raw feature (`n_flows`) | 0.571 | 0.149 | 0.236 | 0.0343 | 0.811 |
-| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 | 0.737 |
-| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** | **0.839** |
+| Best single raw feature (`n_flows`) | 0.826 | 0.124 | 0.216 | 0.0105 | 0.825 |
+| Logistic regression (same features) | 0.295 | 0.272 | 0.283 | 0.2596 | 0.585 |
+| **World model** | 0.444 | 0.936 | **0.602** | 0.4693 | **0.876** |
 
-The world model wins on every metric, but **be careful which margin you quote.**
-Against logistic regression the F1 gap looks enormous (12×) — that flatters us,
-because that baseline scores poorly at a fixed 0.5 threshold. The honest
-comparison is the strongest trivial baseline, one raw feature: there the AUC
-margin is modest (**0.839 vs 0.811**). Where the model wins decisively is
-operational: **8× lower false-positive rate (0.44% vs 3.4%) at 1.7× the
-precision** — which for an appliance that auto-blocks is the number that
-matters.
+**Read that FPR before quoting the F1.** At the default 0.5 threshold the model
+is tuned for recall and fires on 47% of benign windows — fine for triage,
+unusable for auto-blocking. Thresholds should be picked for the deployment, on
+training data. Picking for FPR ≤ 1% on train gives, on val:
+**precision 0.771, recall 0.279, F1 0.410, FPR 3.3%.**
+
+Against the strongest trivial baseline (one raw feature) the honest margin is
+**AUC 0.876 vs 0.825**. Against logistic regression the F1 gap looks enormous;
+that flatters us, because that baseline sits badly against a fixed threshold.
 
 **Per-attack-type breakdown — the most important caveat.** The aggregate F1
 above hides a large split in capability. Forecast AUC against ground truth, per
 held-out day:
 
-| held-out day | dominant attack | attack windows | model AUC | best raw feature |
-|---|---|---|---|---|
-| 2018-03-02 | **Bot / C2** | 46.8% | 0.895 | 0.970 (`ack`) |
-| 2018-02-28 | Infiltration | 3.9% | 0.735 | 0.715 (`n_unique_dst_ports`) |
-| 2018-03-01 | Infiltration | 19.6% | **0.460** | 0.690 (`n_flows`) |
+| day | attack type | 360 s context (shipped) | 16 s context (previous) |
+|---|---|---|---|
+| 2018-03-02 | Bot / C2 | **0.970** | 0.894 |
+| 2018-02-28 | Infiltration | **0.872** | 0.715 |
+| 2018-03-01 | Infiltration | **0.818** | **0.466** |
+| *pooled* | | **0.857** | 0.800 |
 
-Note the model loses to a single raw feature *within* two of three days, yet
-wins when the days are pooled (0.839 vs 0.811). Its scores stay comparable
-across days; a raw feature's scale does not. Claim the cross-day stability,
-not per-day dominance. Ruled out as an alignment artefact: re-scoring against
-future truth (t+1…t+K) instead of present truth moved 03-01 only 0.466 → 0.460.
+**The Infiltration failure was diagnosed and fixed.** The earlier model was
+*below chance* on 03-01 — attack windows scored lower risk than benign ones.
+Per-feature analysis showed the signal was there but needed a coarser window
+(single-feature separability rose from 0.723 at 1 s to 0.781 at 60 s):
+Infiltration is slow, low-volume traffic from an already-trusted host, and a
+one-second window cannot distinguish it. Widening the state window from 16 s to
+**6 minutes** raised Infiltration AUC from 0.466 to 0.818, and improved every
+other day too.
+
+**Be careful what you claim from this.** At *matched* operating points (FPR ≈ 1%)
+the two models score almost the same pooled F1 (0.410 vs 0.408). The real,
+defensible gain is in **ranking and coverage** — better AUC on all three days,
+and an entire attack class going from undetectable to detected — not a jump in
+the headline F1, which moved mostly because the fixed 0.5 threshold sits at a
+different place on the new model's curve.
 
 The model genuinely detects **Bot/C2 traffic** and is **at or below chance on
 Infiltration** — on 03-01 attack windows score *lower* risk than benign ones.
@@ -425,13 +437,24 @@ second machine. They are the reason the pipeline is trustworthy now:
    CICFlowMeter output, which needs a labelled PCAP *and* its CSV counterpart.
    Run `check_drift()` (the demo does automatically) before trusting a
    PCAP-derived forecast.
-2. **Improve Infiltration recall** — the real weakness (AUC 0.466). Ideas, in
+2. ~~**Improve Infiltration recall**~~ — **largely done.** Diagnosed as a
+   windowing problem, not an architecture one: single-feature separability on
+   Infiltration rises with window size (0.723 at 1 s → 0.781 at 60 s), because
+   the attack is slow and low-volume. Retrained at `--window-seconds 15
+   --window 24` (6 min context); Infiltration AUC 0.466 → 0.818 and every other
+   day improved. That checkpoint is now shipped. **Remaining:** at matched FPR
+   the pooled F1 is unchanged, so the win is ranking/coverage rather than the
+   headline metric — a genuine further gain likely needs the host-level
+   fan-in/fan-out features the public CSVs drop (CTU-13 has the IPs), or focal
+   loss, or per-stage thresholds.
+3. **Improve precision at usable thresholds** — the real weakness (AUC 0.466). Ideas, in
    rough order of expected value: focal loss instead of flat class weights; a
    longer `--window` (Infiltration unfolds slowly); per-stage thresholds rather
    than a fixed 0.5; adding host-level fan-in/fan-out features, which need the
    IP columns the public CSVs drop (CTU-13 has them).
-3. **Phase 7 polish** — slides, recorded demo video, README screenshots.
-4. *(Stretch)* CTU-13 as a second dataset; GNN encoder; live SENTINEL bridge.
+4. **Phase 7 polish** — `PRESENTING.md` is written; a recorded demo video
+   and slides remain.
+5. *(Stretch)* CTU-13 as a second dataset; GNN encoder; live SENTINEL bridge.
 
 ### Reproducing the numbers
 

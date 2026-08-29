@@ -48,7 +48,7 @@ def _install_stub():
     st = types.ModuleType("streamlit")
     for n in ("set_page_config", "title", "caption", "header", "subheader",
               "markdown", "error", "success", "info", "warning", "write",
-              "line_chart", "bar_chart", "dataframe", "metric"):
+              "line_chart", "bar_chart", "altair_chart", "dataframe", "metric"):
         setattr(st, n, _rec(n))
 
     st.text_input = lambda label, val="", **k: val
@@ -104,7 +104,8 @@ def run(label, choice, upload=None):
         done = True
     except _Stop:
         done = False
-    charts = CALLS.count("line_chart") + CALLS.count("bar_chart")
+    charts = (CALLS.count("line_chart") + CALLS.count("bar_chart")
+              + CALLS.count("altair_chart"))
     print(f"  {label:<34} {'completed' if done else 'stopped'}  "
           f"charts={charts} warnings={CALLS.count('warning')} errors={CALLS.count('error')}")
     return done, CALLS.count("warning")

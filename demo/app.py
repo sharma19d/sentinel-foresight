@@ -22,6 +22,7 @@ import os
 import sys
 import tempfile
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -126,7 +127,12 @@ def main():
 
         st.header("Forecast")
         k_steps = st.slider("Horizon K (windows ahead)", 1, 20, int(ckpt.get("k", 4)))
-        threshold = st.slider("Alert threshold", 0.05, 0.95, 0.5, 0.05)
+        # 0.5 is not a meaningful default — where it sits on the ROC curve
+        # depends entirely on the checkpoint. The shipped model is recall-heavy
+        # there (fires on ~47% of benign windows), so the default is the
+        # train-picked high-precision point. See PRESENTING.md §4.
+        threshold = st.slider("Alert threshold", 0.05, 0.99,
+                              float(ckpt.get("alert_threshold", 0.90)), 0.01)
         stride = st.select_slider("Resolution (every Nth window)", [1, 2, 5, 10, 25], value=5)
 
         st.header("Traffic")
@@ -221,22 +227,67 @@ def main():
         st.success("✓ No forecast window crosses the alert threshold.")
 
     # ── The timeline ────────────────────────────────────────────────
+    # Built with Altair rather than st.line_chart: the ground-truth overlay is
+    # a 0/1 series, and drawing it as a second LINE on the same axis renders a
+    # dense barcode that hides the forecast entirely. As a shaded band behind
+    # the line it reads as context, which is the whole point of showing it.
     st.subheader("Infiltration probability — forecast timeline")
-    chart = pd.DataFrame({"window": idx, "forecast risk": hprob}).set_index("window")
+    df = pd.DataFrame({"window": idx, "risk": hprob})
+    layers = []
+
     if has_labels:
-        # Ground truth, when the capture happens to carry labels, so the
-        # forecast can be read against what actually happened.
-        truth = (y_true[idx] >= INFILTRATION_STAGE).astype(float)
-        chart["actual attack (ground truth)"] = truth
-    st.line_chart(chart, height=320)
+        truth = (y_true[idx] >= INFILTRATION_STAGE)
+        df["attack"] = truth
+        layers.append(
+            alt.Chart(df[df["attack"]]).mark_rect(opacity=0.16, color="#d62728")
+            .encode(x=alt.X("window:Q", title="window (time →)"), x2="window2:Q")
+            .transform_calculate(window2="datum.window + %d" % max(1, int(stride)))
+        )
+
+    # Zoom the y-axis when the risk band is narrow. A well-calibrated model can
+    # sit entirely in (say) 0.8-1.0, and a fixed 0-1 axis renders that as a flat
+    # line that hides all the structure the forecast actually has. The zoom is
+    # called out in the caption rather than applied silently.
+    lo_r, hi_r = float(hprob.min()), float(hprob.max())
+    zoomed = (hi_r - lo_r) < 0.5
+    y_domain = [max(0.0, lo_r - 0.02), min(1.0, hi_r + 0.02)] if zoomed else [0.0, 1.0]
+
+    layers.append(
+        alt.Chart(df).mark_line(color="#1f77b4", strokeWidth=1.6).encode(
+            x=alt.X("window:Q", title="window (time →)"),
+            y=alt.Y("risk:Q", title="forecast infiltration risk",
+                    scale=alt.Scale(domain=y_domain, clamp=True)),
+            tooltip=["window:Q", alt.Tooltip("risk:Q", format=".3f")],
+        )
+    )
+    layers.append(
+        alt.Chart(pd.DataFrame({"t": [threshold]}))
+        .mark_rule(color="#d62728", strokeDash=[6, 4]).encode(y="t:Q")
+    )
+    st.altair_chart(alt.layer(*layers).properties(height=320), use_container_width=True)
+    st.caption(
+        ("Red band = actual attack windows (ground truth) · " if has_labels else "")
+        + f"dashed line = alert threshold ({threshold:.0%}) · "
+        f"blue = risk forecast {k_steps} windows ahead"
+        + (f" · **y-axis zoomed to {y_domain[0]:.2f}–{y_domain[1]:.2f}** "
+           "(all risk values fall in a narrow band)" if zoomed else "")
+    )
 
     st.subheader("Predicted kill-chain stage over time")
-    stage_df = pd.DataFrame({
-        "window": idx,
-        "stage": [stage_name(s) for s in hstage],
-        "value": hstage,
-    })
-    st.bar_chart(stage_df.set_index("window")["value"], height=180)
+    # A step area, not bars: hundreds of bars at this density render as noise,
+    # while a step makes the transitions between stages legible.
+    stage_df = pd.DataFrame({"window": idx, "stage": hstage,
+                             "name": [stage_name(s) for s in hstage]})
+    st.altair_chart(
+        alt.Chart(stage_df).mark_area(interpolate="step-after", opacity=0.75,
+                                      color="#ff7f0e").encode(
+            x=alt.X("window:Q", title="window (time →)"),
+            y=alt.Y("stage:Q", title="kill-chain stage",
+                    scale=alt.Scale(domain=[0, int(max(hstage.max(), 1))])),
+            tooltip=["window:Q", "name:N"],
+        ).properties(height=180),
+        use_container_width=True,
+    )
     st.caption(" · ".join(f"{int(s)} = {stage_name(s)}" for s in sorted(set(hstage))))
 
     # ── Why? ────────────────────────────────────────────────────────

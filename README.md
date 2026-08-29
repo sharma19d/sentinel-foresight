@@ -25,10 +25,16 @@ instead learns a **world model** of the network — the state-transition dynamic
 | Explainability — integrated gradients + attention | ✅ built |
 | Benchmark vs persistence / logistic-regression / majority | ✅ built |
 | Offline Streamlit demo (bundled real capture) | ✅ built |
+| Presentation runbook ([`PRESENTING.md`](PRESENTING.md)) | ✅ built |
 | Out-of-distribution input guard | ✅ built |
 | PCAP ingest (scapy → flows, CICFlowMeter-compatible) | ✅ built |
 | Regression tests (`tests/`) | ✅ built |
 | Slides / demo video / screenshots | ❌ not started |
+
+![SENTINEL Foresight demo](docs/demo_screenshot.png)
+
+*Forecast timeline on a held-out capture. Blue = risk forecast 4 windows
+ahead; red band = actual attack windows; dashed = alert threshold.*
 
 ---
 
@@ -42,7 +48,7 @@ held out temporally (never a random split). Raw numbers: `benchmark/results.json
 | | next-state MSE |
 |---|---|
 | Persistence baseline (`S_t+1 = S_t`) | 0.902 |
-| **World model** | **0.562 (−37.7%)** |
+| **World model** | **0.227 (−74.8%)** |
 
 This is the result that earns the name "world model": it predicts the network's
 next state materially better than assuming nothing changes.
@@ -52,47 +58,46 @@ next state materially better than assuming nothing changes.
 | model | precision | recall | F1 | FPR | AUC |
 |---|---|---|---|---|---|
 | Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 | n/a |
-| Best single raw feature (`n_flows`) | 0.571 | 0.149 | 0.236 | 0.0343 | 0.811 |
-| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 | 0.737 |
-| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** | **0.839** |
+| Best single raw feature (`n_flows`) | 0.826 | 0.124 | 0.216 | 0.0105 | 0.825 |
+| Logistic regression (same features) | 0.295 | 0.272 | 0.283 | 0.2596 | 0.585 |
+| **World model** | 0.444 | 0.936 | **0.602** | 0.4693 | **0.876** |
 
-The world model wins on every metric, but **be careful which margin you quote.**
-Against logistic regression the F1 gap looks enormous (12×) — that flatters us,
-because that baseline scores poorly at a fixed 0.5 threshold. The honest
-comparison is the strongest trivial baseline, one raw feature: there the AUC
-margin is modest (**0.839 vs 0.811**). Where the model wins decisively is
-operational: **8× lower false-positive rate (0.44% vs 3.4%) at 1.7× the
-precision** — which for an appliance that auto-blocks is the number that
-matters.
+**Read that FPR before quoting the F1.** At the default 0.5 threshold the model
+is tuned for recall and fires on 47% of benign windows — fine for triage,
+unusable for auto-blocking. Thresholds should be picked for the deployment, on
+training data. Picking for FPR ≤ 1% on train gives, on val:
+**precision 0.771, recall 0.279, F1 0.410, FPR 3.3%.**
 
-### ⚠ The caveat that must travel with those numbers
+Against the strongest trivial baseline (one raw feature) the honest margin is
+**AUC 0.876 vs 0.825**. Against logistic regression the F1 gap looks enormous;
+that flatters us, because that baseline sits badly against a fixed threshold.
+
+### Per-day breakdown — forecast AUC on held-out days
 
 Aggregate F1 hides a large capability split. Forecast AUC per held-out day:
 
-| day | attack type | model AUC | best raw feature |
+| day | attack type | 360 s context (shipped) | 16 s context (previous) |
 |---|---|---|---|
-| 2018-03-02 | **Bot / C2** | 0.895 | 0.970 (`ack`) |
-| 2018-02-28 | Infiltration | 0.735 | 0.715 (`n_unique_dst_ports`) |
-| 2018-03-01 | Infiltration | **0.460** | 0.690 (`n_flows`) |
+| 2018-03-02 | Bot / C2 | **0.970** | 0.894 |
+| 2018-02-28 | Infiltration | **0.872** | 0.715 |
+| 2018-03-01 | Infiltration | **0.818** | **0.466** |
+| *pooled* | | **0.857** | 0.800 |
 
-Two things to be straight about:
+**The Infiltration failure was diagnosed and fixed.** The earlier model was
+*below chance* on 03-01 — attack windows scored lower risk than benign ones.
+Per-feature analysis showed the signal was there but needed a coarser window
+(single-feature separability rose from 0.723 at 1 s to 0.781 at 60 s):
+Infiltration is slow, low-volume traffic from an already-trusted host, and a
+one-second window cannot distinguish it. Widening the state window from 16 s to
+**6 minutes** raised Infiltration AUC from 0.466 to 0.818, and improved every
+other day too.
 
-**Infiltration is barely detected.** On 03-01 the model is *below chance* —
-attack windows score lower risk than benign ones. Infiltration is the
-acknowledged-hardest CIC-IDS-2018 class (largely normal-looking traffic from an
-already-trusted host), but the aggregate number is carried by the Bot day.
-
-**Within a single day, a raw feature can beat the model** (two of three days
-above). Pooled across days the model wins (0.839 vs 0.811) — its scores stay
-comparable across days, whereas a raw feature's scale shifts between them. That
-cross-day stability is a real property worth claiming; per-day dominance is not.
-
-Overall recall is also low (0.252): this is a **high-precision, low-noise
-early-warning signal**, not a complete detector. Present it that way.
-
-*(Checked and ruled out: the per-day numbers are not a temporal-alignment
-artefact. Re-scoring the forecast against future truth (t+1…t+K) rather than
-present truth moved 03-01 only 0.466 → 0.460.)*
+**Be careful what you claim from this.** At *matched* operating points (FPR ≈ 1%)
+the two models score almost the same pooled F1 (0.410 vs 0.408). The real,
+defensible gain is in **ranking and coverage** — better AUC on all three days,
+and an entire attack class going from undetectable to detected — not a jump in
+the headline F1, which moved mostly because the fixed 0.5 threshold sits at a
+different place on the new model's curve.
 
 ---
 

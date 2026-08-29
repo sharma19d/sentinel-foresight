@@ -18,10 +18,19 @@ def make_synthetic_flows(seed: int = 0, minutes: float = 6.0) -> pd.DataFrame:
     rows = []
     t = 0.0
 
+    # Spread the fixed number of emitted flows across the requested duration.
+    # The inter-arrival gap used to be hardcoded, so `minutes` was accepted and
+    # silently ignored: every capture came out ~60 s long whatever was asked
+    # for. That went unnoticed while the state window was 1 s, and broke the
+    # moment a model trained with a 15 s window needed more windows than a
+    # 60 s capture can supply.
+    _TOTAL_FLOWS = 1200
+    gap = (minutes * 60.0) / _TOTAL_FLOWS
+
     def emit(n, label, stage, *, ports, syn=0, ack=1, proto=6, dur=0.05, byts=800, pkts=6, dst="10.0.0.5"):
         nonlocal t
         for _ in range(n):
-            t += float(rng.exponential(0.05))
+            t += float(rng.exponential(gap))
             rows.append(dict(
                 ts=t, src_ip="10.0.0.9", dst_ip=dst,
                 dst_port=int(rng.choice(ports)), protocol=proto,
