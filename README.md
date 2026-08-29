@@ -49,30 +49,50 @@ next state materially better than assuming nothing changes.
 
 **Detection — infiltration windows (23.4% prevalence)**
 
-| model | precision | recall | F1 | FPR |
-|---|---|---|---|---|
-| Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 |
-| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 |
-| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** |
+| model | precision | recall | F1 | FPR | AUC |
+|---|---|---|---|---|---|
+| Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 | n/a |
+| Best single raw feature (`n_flows`) | 0.571 | 0.149 | 0.236 | 0.0343 | 0.811 |
+| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 | 0.737 |
+| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** | **0.839** |
 
-~12× the baseline's F1 at half its false-positive rate.
+The world model wins on every metric, but **be careful which margin you quote.**
+Against logistic regression the F1 gap looks enormous (12×) — that flatters us,
+because that baseline scores poorly at a fixed 0.5 threshold. The honest
+comparison is the strongest trivial baseline, one raw feature: there the AUC
+margin is modest (**0.839 vs 0.811**). Where the model wins decisively is
+operational: **8× lower false-positive rate (0.44% vs 3.4%) at 1.7× the
+precision** — which for an appliance that auto-blocks is the number that
+matters.
 
 ### ⚠ The caveat that must travel with those numbers
 
 Aggregate F1 hides a large capability split. Forecast AUC per held-out day:
 
-| day | attack type | AUC |
-|---|---|---|
-| 2018-03-02 | **Bot / C2** | **0.894** |
-| 2018-02-28 | Infiltration | 0.715 |
-| 2018-03-01 | Infiltration | **0.466** |
+| day | attack type | model AUC | best raw feature |
+|---|---|---|---|
+| 2018-03-02 | **Bot / C2** | 0.895 | 0.970 (`ack`) |
+| 2018-02-28 | Infiltration | 0.735 | 0.715 (`n_unique_dst_ports`) |
+| 2018-03-01 | Infiltration | **0.460** | 0.690 (`n_flows`) |
 
-The model genuinely detects **Bot/C2 traffic** and is **at or below chance on
-Infiltration** — on 03-01, attack windows score *lower* risk than benign ones.
-Infiltration is the acknowledged-hardest CIC-IDS-2018 class, but the honest
-reading is that the headline number is carried by the Bot day. Overall recall is
-also low (0.252): this is a **high-precision, low-noise early-warning signal**,
-not a complete detector. Present it that way.
+Two things to be straight about:
+
+**Infiltration is barely detected.** On 03-01 the model is *below chance* —
+attack windows score lower risk than benign ones. Infiltration is the
+acknowledged-hardest CIC-IDS-2018 class (largely normal-looking traffic from an
+already-trusted host), but the aggregate number is carried by the Bot day.
+
+**Within a single day, a raw feature can beat the model** (two of three days
+above). Pooled across days the model wins (0.839 vs 0.811) — its scores stay
+comparable across days, whereas a raw feature's scale shifts between them. That
+cross-day stability is a real property worth claiming; per-day dominance is not.
+
+Overall recall is also low (0.252): this is a **high-precision, low-noise
+early-warning signal**, not a complete detector. Present it that way.
+
+*(Checked and ruled out: the per-day numbers are not a temporal-alignment
+artefact. Re-scoring the forecast against future truth (t+1…t+K) rather than
+present truth moved 03-01 only 0.466 → 0.460.)*
 
 ---
 

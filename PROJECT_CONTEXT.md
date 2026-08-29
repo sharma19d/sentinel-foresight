@@ -164,24 +164,37 @@ this bar, "world model" would have been an overclaim.
 
 **Detection — infiltration (stage ≥ Initial Access), 23.4% prevalence**
 
-| model | precision | recall | F1 | FPR |
-|---|---|---|---|---|
-| Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 |
-| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 |
-| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** |
+| model | precision | recall | F1 | FPR | AUC |
+|---|---|---|---|---|---|
+| Majority (always benign) | 0.000 | 0.000 | 0.000 | 0.0000 | n/a |
+| Best single raw feature (`n_flows`) | 0.571 | 0.149 | 0.236 | 0.0343 | 0.811 |
+| Logistic regression (same features) | 0.420 | 0.018 | 0.034 | 0.0075 | 0.737 |
+| **World model** | **0.946** | **0.252** | **0.398** | **0.0044** | **0.839** |
 
-The temporal model beats the linear baseline by ~12× on F1 *and* halves the
-false-positive rate, so the sequence modelling is earning its complexity.
+The world model wins on every metric, but **be careful which margin you quote.**
+Against logistic regression the F1 gap looks enormous (12×) — that flatters us,
+because that baseline scores poorly at a fixed 0.5 threshold. The honest
+comparison is the strongest trivial baseline, one raw feature: there the AUC
+margin is modest (**0.839 vs 0.811**). Where the model wins decisively is
+operational: **8× lower false-positive rate (0.44% vs 3.4%) at 1.7× the
+precision** — which for an appliance that auto-blocks is the number that
+matters.
 
 **Per-attack-type breakdown — the most important caveat.** The aggregate F1
 above hides a large split in capability. Forecast AUC against ground truth, per
 held-out day:
 
-| held-out day | dominant attack | attack windows | AUC | risk separation |
+| held-out day | dominant attack | attack windows | model AUC | best raw feature |
 |---|---|---|---|---|
-| 2018-03-02 | **Bot / C2** | 46.8% | **0.894** | **+0.375** |
-| 2018-02-28 | Infiltration | 3.9% | 0.715 | +0.044 |
-| 2018-03-01 | Infiltration | 19.6% | **0.466** | −0.013 |
+| 2018-03-02 | **Bot / C2** | 46.8% | 0.895 | 0.970 (`ack`) |
+| 2018-02-28 | Infiltration | 3.9% | 0.735 | 0.715 (`n_unique_dst_ports`) |
+| 2018-03-01 | Infiltration | 19.6% | **0.460** | 0.690 (`n_flows`) |
+
+Note the model loses to a single raw feature *within* two of three days, yet
+wins when the days are pooled (0.839 vs 0.811). Its scores stay comparable
+across days; a raw feature's scale does not. Claim the cross-day stability,
+not per-day dominance. Ruled out as an alignment artefact: re-scoring against
+future truth (t+1…t+K) instead of present truth moved 03-01 only 0.466 → 0.460.
 
 The model genuinely detects **Bot/C2 traffic** and is **at or below chance on
 Infiltration** — on 03-01 attack windows score *lower* risk than benign ones.
