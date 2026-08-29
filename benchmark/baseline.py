@@ -151,7 +151,10 @@ def main():
     # would hide that.
     last_tr, last_va = Xtr[:, -1, :], Xva[:, -1, :]
     ytr_bin = (Str >= INFILTRATION_STAGE)
-    best_i, best_auc = 0, 0.0
+    # Seed with 0.5 (= no separation). Seeding with 0.0 would be a bug: it sits
+    # the maximum possible distance from 0.5, so no real feature could ever
+    # beat it and the loop would always report feature 0.
+    best_i, best_auc = 0, 0.5
     for i in range(last_tr.shape[1]):
         col = last_tr[:, i]
         if np.ptp(col) == 0:
