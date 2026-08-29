@@ -118,7 +118,8 @@ sentinel-foresight/
 │   ├── train.py                ✅ Colab-ready trainer (synthetic + CIC path)
 │   └── README.md               ✅ Colab quickstart
 ├── benchmark/                  ✅ persistence / logreg / majority baselines + results.json
-├── demo/                       ✅ offline Streamlit forecast-timeline app (CSV; PCAP pending)
+├── demo/                       ✅ offline Streamlit app + bundled real sample (CSV **and PCAP**)
+├── tests/                      ✅ PCAP ingest · CSV/PCAP equivalence · demo smoke
 └── data/                       (datasets — gitignored)
 ```
 
@@ -138,7 +139,7 @@ Each phase is a self-contained, demoable increment. Status as of this writing:
 | **3** | **Run on Colab** — smoke test, then train on CIC-IDS-2018 | ✅ done (3 runs, best-epoch ckpt) |
 | **4** | Explainability — attribution + attention (`foresight/explain/`) | ✅ done |
 | **5** | Benchmark — baselines + metrics table | ✅ done — beats persistence & logreg |
-| **6** | Offline Streamlit demo — forecast timeline + stage + why | ✅ built (CSV) · ⏳ PCAP ingest |
+| **6** | Offline Streamlit demo — forecast timeline + stage + why | ✅ done (CSV **and PCAP**) |
 | **7** | Polish — theming, recorded demo video, slides, README figures | ⏳ **NEXT** |
 | **S** | STRETCH — GNN encoder, CTU-13 second dataset, live SENTINEL bridge | optional |
 
@@ -261,7 +262,7 @@ list + config). Inference runs offline on the laptop from that file.
 | K-step forecast + infiltration probability | `foresight/rollout/rollout.py` |
 | MITRE ATT&CK stage mapping | `foresight/mitre.py` + stage head |
 | Explainability (attention / attribution) | `foresight/explain/` ✅ |
-| Offline demo (Streamlit) accepting PCAP/CSV | `demo/` ✅ CSV · ⏳ **PCAP not yet implemented** |
+| Offline demo (Streamlit) accepting PCAP/CSV | `demo/` ✅ both |
 | Benchmark vs logistic-regression baseline | `benchmark/` ✅ (see results.json) |
 
 ---
@@ -401,12 +402,16 @@ second machine. They are the reason the pipeline is trustworthy now:
 
 ### What to do next, in order
 
-1. **PCAP ingest** *(closes a stated PS deliverable)* — the PS asks for a demo
-   accepting "PCAP or CSV" and `scapy` is already in `requirements.txt`, but
-   nothing uses it. Write `foresight/data/pcap.py`: PCAP → the canonical flow
-   DataFrame (`CANONICAL_COLUMNS` in `state.py`), reusing
-   `foresight/features/packet_features.py`. Then add it to the demo's uploader.
-   A judge dropping in a `.pcap` and getting nothing would be a bad moment.
+1. ~~**PCAP ingest**~~ — **done.** `foresight/data/pcap.py` reassembles packets
+   into the canonical flow schema following CICFlowMeter's definitions (see its
+   docstring for why each choice matters: payload-not-frame bytes, bidirectional
+   keying, 120 s flow timeout). `tests/test_pcap_ingest.py` proves both ingest
+   paths produce identical canonical features for identical traffic — the guard
+   against unit-conversion asymmetry, since CICFlowMeter reports µs and PCAP
+   gives seconds. **Still unverified:** distribution match against real
+   CICFlowMeter output, which needs a labelled PCAP *and* its CSV counterpart.
+   Run `check_drift()` (the demo does automatically) before trusting a
+   PCAP-derived forecast.
 2. **Improve Infiltration recall** — the real weakness (AUC 0.466). Ideas, in
    rough order of expected value: focal loss instead of flat class weights; a
    longer `--window` (Infiltration unfolds slowly); per-stage thresholds rather

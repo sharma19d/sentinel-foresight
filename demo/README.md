@@ -29,6 +29,13 @@ purpose: a live demo shouldn't depend on a 6.5 GB dataset being present on the
 machine, and the scripted progression makes the forecast's behaviour legible in
 a single screen.
 
+**Upload a raw PCAP** (`.pcap` / `.pcapng`). Packets are reassembled into flows
+locally with scapy — nothing leaves the machine. The flow features follow
+CICFlowMeter's definitions (payload bytes not frame length, bidirectional
+5-tuple keying, 120 s flow timeout) so the model sees features that mean what
+they meant in training; the app runs the drift check on the result and warns if
+they don't land in-distribution.
+
 **Upload a CICFlowMeter CSV.** Labels are optional — real traffic being scored
 at inference time has no ground-truth column. If labels *are* present they're
 overlaid on the timeline so the forecast can be read against what actually

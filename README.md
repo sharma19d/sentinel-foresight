@@ -26,7 +26,8 @@ instead learns a **world model** of the network — the state-transition dynamic
 | Benchmark vs persistence / logistic-regression / majority | ✅ built |
 | Offline Streamlit demo (bundled real capture) | ✅ built |
 | Out-of-distribution input guard | ✅ built |
-| **PCAP ingest** | ❌ **not implemented** — CSV only |
+| PCAP ingest (scapy → flows, CICFlowMeter-compatible) | ✅ built |
+| Regression tests (`tests/`) | ✅ built |
 | Slides / demo video / screenshots | ❌ not started |
 
 ---
@@ -83,10 +84,16 @@ git clone <this repo> && cd sentinel-foresight
 # CPU-only torch keeps the install small
 python3 -m venv .venv
 .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
-.venv/bin/pip install streamlit pandas numpy scikit-learn
+.venv/bin/pip install streamlit pandas numpy scikit-learn scapy
 
-.venv/bin/streamlit run demo/app.py
+.venv/bin/streamlit run demo/app.py          # demo
+.venv/bin/python tests/test_pcap_ingest.py   # tests (no pytest needed)
+.venv/bin/python tests/test_demo_smoke.py
 ```
+
+The demo accepts a **CICFlowMeter CSV or a raw PCAP** (reassembled to flows
+locally with scapy, following CICFlowMeter's feature definitions so the model
+sees what it was trained on).
 
 The demo bundles a real 80-minute slice of held-out CIC-IDS-2018 traffic
 (`demo/sample_capture.csv.gz`, 1.9 MB), so it runs with **no dataset download**.
@@ -100,7 +107,7 @@ It needs a checkpoint at `checkpoints/world_model_best.pt` — see
 ```
 foresight/
   features/   flow + packet feature extraction  (ported from SENTINEL)
-  data/       state.py (S_t definition) · cicids.py (loader) · drift.py (OOD guard) · synth.py
+  data/       state.py (S_t definition) · cicids.py (CSV) · pcap.py (PCAP) · drift.py (OOD guard) · synth.py
   model/      world_model.py — P(S_t+1 | S_t), next-state + stage heads
   rollout/    K-step forward simulation, batched
   explain/    integrated gradients + temporal attention
@@ -108,6 +115,7 @@ foresight/
 training/     train.py — CLI trainer (best-val-F1 checkpointing)
 benchmark/    baseline.py + results.json
 demo/         app.py + bundled real sample capture
+tests/        PCAP ingest + CSV/PCAP equivalence + demo smoke tests
 checkpoints/  trained weights (gitignored)
 ```
 

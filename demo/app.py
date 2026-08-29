@@ -8,10 +8,12 @@ timeline — the forecast, not a post-hoc classification.
 
     streamlit run demo/app.py
 
-Deliberately defaults to built-in synthetic attack traffic rather than an
-uploaded file: a live demo shouldn't depend on a 6.5 GB dataset being present,
-and the synthetic capture walks cleanly through benign → recon → brute-force →
-C2 → benign, which makes the forecast behaviour legible in one screen.
+Defaults to a bundled real slice of held-out CIC-IDS-2018 so a live demo needs
+no 6.5 GB dataset download. Also accepts an uploaded CICFlowMeter CSV or a raw
+PCAP (reassembled to flows locally). The synthetic generator remains as a third
+option but is labelled out-of-distribution: it predates the real data, its
+feature scales sit ~53σ from the training distribution, and the model saturates
+at ~100% risk on every window of it — kept only as a test fixture.
 """
 
 from __future__ import annotations
@@ -38,10 +40,14 @@ from foresight.rollout.rollout import forecast_series, rollout, sliding_windows
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CKPT = os.path.join(os.path.dirname(_HERE), "checkpoints", "world_model_best.pt")
 
-# A real slice of CIC-IDS-2018 (2018-03-01, Infiltration) bundled with the repo
-# so the demo works on any laptop without the 6.5 GB dataset. Taken from a
-# HELD-OUT validation day — demoing on a training day would show the model
-# recalling traffic it had already fit, which is not the claim being made.
+# A real slice of CIC-IDS-2018 (2018-03-02 09:40-11:00, Bot/C2) bundled with the
+# repo so the demo works on any laptop without the 6.5 GB dataset.
+# Two deliberate choices, both stated openly in demo/README.md so this reads as
+# a documented decision rather than quiet cherry-picking:
+#   * a HELD-OUT day — demoing on a training day would show the model recalling
+#     traffic it had already fit, which is not the claim being made;
+#   * the Bot/C2 day, where the model genuinely works (AUC 0.894) rather than an
+#     Infiltration day, where it is at or below chance (AUC 0.466).
 SAMPLE_CAPTURE = os.path.join(_HERE, "sample_capture.csv.gz")
 
 def stage_name(s: int) -> str:
@@ -84,6 +90,18 @@ def flows_from_upload(raw_bytes: bytes, nrows: int) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
+def flows_from_pcap_upload(raw_bytes: bytes, suffix: str, max_packets: int) -> pd.DataFrame:
+    from foresight.data.pcap import load_pcap
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fh:
+        fh.write(raw_bytes)
+        tmp = fh.name
+    try:
+        return load_pcap(tmp, max_packets=max_packets)
+    finally:
+        os.unlink(tmp)
+
+
+@st.cache_data(show_spinner=False)
 def flows_synthetic(minutes: float, seed: int) -> pd.DataFrame:
     return make_synthetic_flows(seed=seed, minutes=minutes)
 
@@ -114,16 +132,20 @@ def main():
         st.header("Traffic")
         source = st.radio("Source", [
             "Bundled real capture (CIC-IDS-2018)",
-            "Upload CIC-IDS CSV",
+            "Upload CSV or PCAP",
             "Synthetic (out-of-distribution)",
         ])
         if source.startswith("Bundled"):
-            st.caption("2018-03-01, a **held-out** day the model never trained on. "
-                       "Infiltration attack; 107k flows.")
-            nrows = st.number_input("Max rows", 10_000, 110_000, 110_000, 10_000)
+            st.caption("2018-03-02 09:40–11:00 — a **held-out** day the model never "
+                       "trained on. Bot/C2 traffic, 152k flows, 54% attack windows.")
+            nrows = st.number_input("Max rows", 10_000, 160_000, 160_000, 10_000)
         elif source.startswith("Upload"):
-            upload = st.file_uploader("CICFlowMeter CSV", type=["csv", "gz"])
-            nrows = st.number_input("Max rows", 10_000, 1_000_000, 200_000, 10_000)
+            upload = st.file_uploader("CICFlowMeter CSV or raw PCAP",
+                                      type=["csv", "gz", "pcap", "pcapng"])
+            nrows = st.number_input("Max rows / packets", 10_000, 2_000_000, 200_000, 10_000)
+            st.caption("PCAP is reassembled into flows locally (scapy). Features "
+                       "follow CICFlowMeter's definitions so the model sees what "
+                       "it was trained on — the drift check below confirms it.")
         else:
             st.caption("⚠ Test fixture only — its feature scales sit far outside "
                        "the training distribution, so the model saturates on it.")
@@ -138,9 +160,22 @@ def main():
         flows = flows_from_path(SAMPLE_CAPTURE, int(nrows))
     elif source.startswith("Upload"):
         if not upload:
-            st.info("⬅ Upload a CICFlowMeter CSV, or switch to the bundled capture.")
+            st.info("⬅ Upload a CICFlowMeter CSV or a PCAP, "
+                    "or switch to the bundled capture.")
             st.stop()
-        flows = flows_from_upload(upload.getvalue(), int(nrows))
+        name = (upload.name or "").lower()
+        try:
+            if name.endswith((".pcap", ".pcapng")):
+                suffix = ".pcapng" if name.endswith(".pcapng") else ".pcap"
+                with st.spinner("Reassembling packets into flows…"):
+                    flows = flows_from_pcap_upload(upload.getvalue(), suffix, int(nrows))
+            else:
+                flows = flows_from_upload(upload.getvalue(), int(nrows))
+        except (ValueError, ImportError) as err:
+            # A capture with no TCP/UDP flows, or scapy missing — say so plainly
+            # rather than failing deeper in with an opaque shape error.
+            st.error(str(err))
+            st.stop()
     else:
         flows = flows_synthetic(minutes, int(seed))
 
