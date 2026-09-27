@@ -34,7 +34,7 @@ day, where it is at or below chance (AUC 0.466). Measured on this sample:
 AUC 0.731, precision 0.94 at the 0.9 threshold.
 
 **Synthetic generator (third option).** Walks benign → recon → brute-force →
-C2 → benign. Predates the real data and its feature scales sit ~53σ outside the
+C2 → benign. Predates the real data and its feature scales sit dozens of σ outside the
 training distribution, so the model saturates near 100% on every window of it,
 benign included. Kept as a test fixture, and the app raises a drift warning on
 it — do not demo with this.
@@ -64,8 +64,10 @@ happened.
 
 ## Honest framing for questions
 
-The shipped checkpoint is precision-first: **94.6% precision, 0.44% FPR, but
-0.252 recall** on CIC-IDS-2018. It rarely cries wolf and it beats a persistence
-baseline on next-state prediction by 37.7% — but it misses roughly three of
-every four attack windows. Don't demo it as a complete detector; demo it as a
-high-confidence early-warning signal. See `benchmark/results.json`.
+The shipped checkpoint (15 s windows × 24) ranks attacks well — **AUC 0.876**
+against 0.825 for the best single raw feature — and beats a persistence baseline
+on next-state prediction by 24.7%. Its operating point depends heavily on the
+threshold: at 0.5 it catches 94% of attack windows but fires on 47% of benign
+ones; tuned for FPR ≤ 1% on train it gives precision 0.771, recall 0.279. Don't
+demo it as a complete detector; demo it as an early-warning signal whose
+threshold you pick for the deployment. See `benchmark/results_ws15.json`.

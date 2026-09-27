@@ -74,9 +74,10 @@ Scroll to **Why this forecast?**:
 Switch the traffic source to **Synthetic (out-of-distribution)**. A warning
 appears.
 
-> "One more thing. Our synthetic test traffic sits about 53 standard deviations
-> outside the training distribution, and the model happily reported 100% risk on
-> *every* window of it — including benign ones. A security tool that is
+> "One more thing. Our synthetic test traffic sits dozens of standard deviations
+> outside the training distribution — you can see the figure in the warning —
+> and on input like that the model's risk score saturates regardless of what
+> the traffic actually is. A security tool that is
 > confidently wrong is worse than useless, so it now detects that and refuses to
 > present the forecast as trustworthy."
 
@@ -86,9 +87,11 @@ adversarially and found something.
 ### Close on the benchmark (30 s)
 
 > "Against a persistence baseline — 'assume nothing changes' — it predicts the
-> next network state **37.7% better**. That's what earns the name *world model*.
-> On detection it beats logistic regression and the best single raw feature, at
-> an **8× lower false-positive rate**."
+> next network state **24.7% better**. That's what earns the name *world model*.
+> On detection it ranks attacks better than both baselines we built — AUC
+> **0.876**, against 0.825 for the best single raw feature and 0.585 for
+> logistic regression. And it took an attack class it used to miss entirely,
+> Infiltration, from below chance to 0.818."
 
 ---
 
@@ -98,11 +101,11 @@ adversarially and found something.
 > It regresses the full 22-dimensional next state, then reads the kill-chain
 > stage off that *predicted* state. Because it predicts state, predictions feed
 > back in and roll K steps forward. A classifier cannot do that. And it beats a
-> persistence baseline on next-state MSE by 37.7% — if it couldn't, I'd agree the
+> persistence baseline on next-state MSE by 24.7% — if it couldn't, I'd agree the
 > name was an overclaim.
 
 **"What's your accuracy?"** — do not answer with accuracy.
-> Accuracy is misleading here: always predicting "benign" scores ~76% on this
+> Accuracy is misleading here: always predicting "benign" scores ~71% on this
 > data. Use AUC 0.876 and the FPR instead, and say why.
 
 **"Where does it fail?"** — the most important question. Answer it fully.
@@ -127,11 +130,14 @@ adversarially and found something.
 
 ## 4. Things to be careful about
 
-**Do not quote "12× better than logistic regression."** It's technically true
-and it flatters us — that baseline scores badly at a fixed 0.5 threshold.
-Against the best single raw feature the AUC margin is modest (0.876 vs 0.825).
-Lead with the false-positive rate instead; it's the honest and more impressive
-number.
+**Do not quote an F1 gap over logistic regression** (0.602 vs 0.283). It
+flatters us — that baseline scores badly at a fixed 0.5 threshold. Against the
+best single raw feature the AUC margin is modest (0.876 vs 0.825); say so.
+
+**Do not claim a lower false-positive rate.** That was true of the old 1-second
+model, not the shipped one. At a 0.5 threshold the shipped model fires on 47% of
+benign windows; at a matched ~1% FPR its F1 is about the same as the old
+model's (0.410 vs 0.408). Lead with AUC and the Infiltration fix instead.
 
 **Do not demo with the synthetic source** except to show the drift guard.
 
@@ -139,11 +145,12 @@ number.
 the model. What survives scrutiny is that the model's scores stay comparable
 *across* days, where a raw feature's scale shifts.
 
-**Know your threshold.** The default 0.5 is not sacred — the shipped model's
-operating point moves a lot with it (at 0.5 it favours recall; raise it for
-precision). If asked "why 0.5", the answer is that thresholds should be picked
-on train data for a target FPR, and `benchmark/results_ws15.json` shows the
-trade-off curve.
+**Know your threshold.** The demo's slider defaults to 0.90, not 0.5 — the
+shipped model's operating point moves a lot with it (low thresholds favour
+recall; raise it for precision). If asked "why that number", the answer is that
+thresholds should be picked on train data for a target FPR; the benchmark
+numbers in `benchmark/results_ws15.json` are at 0.5 and the README gives the
+FPR ≤ 1% operating point.
 
 ---
 
@@ -158,6 +165,6 @@ trade-off curve.
 | Everything is broken | `git stash && git checkout main` — the bundled sample
   path is the one exercised by the smoke tests. |
 
-**Fallback:** if the laptop dies entirely, `benchmark/results.json` and the
+**Fallback:** if the laptop dies entirely, `benchmark/results_ws15.json` and the
 tables in `README.md` carry every number, and the architecture diagram is in
 `PROJECT_CONTEXT.md` §3. You can present the whole thing from the repo.

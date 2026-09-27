@@ -41,19 +41,19 @@ ahead; red band = actual attack windows; dashed = alert threshold.*
 ## Measured results
 
 Trained on 4M flows from CIC-IDS-2018; validation is the **last 3 capture days**,
-held out temporally (never a random split). Raw numbers: `benchmark/results.json`.
+held out temporally (never a random split). Raw numbers: `benchmark/results_ws15.json` (shipped model; `results.json` is the previous 1-second model).
 
 **Dynamics — did it learn `P(S_t+1 | S_t)`?**
 
 | | next-state MSE |
 |---|---|
-| Persistence baseline (`S_t+1 = S_t`) | 0.902 |
-| **World model** | **0.227 (−74.8%)** |
+| Persistence baseline (`S_t+1 = S_t`) | 0.302 |
+| **World model** | **0.227 (−24.7%)** |
 
 This is the result that earns the name "world model": it predicts the network's
 next state materially better than assuming nothing changes.
 
-**Detection — infiltration windows (23.4% prevalence)**
+**Detection — infiltration windows (28.6% prevalence)**
 
 | model | precision | recall | F1 | FPR | AUC |
 |---|---|---|---|---|---|
