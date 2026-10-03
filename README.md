@@ -29,7 +29,7 @@ instead learns a **world model** of the network — the state-transition dynamic
 | Out-of-distribution input guard | ✅ built |
 | PCAP ingest (scapy → flows, CICFlowMeter-compatible) | ✅ built |
 | Regression tests (`tests/`) | ✅ built |
-| Slides / demo video / screenshots | ❌ not started |
+| Slides / demo video / screenshots | ✅ built |
 
 ![SENTINEL Foresight demo](docs/demo_screenshot.png)
 
